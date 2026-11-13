@@ -263,7 +263,11 @@ def main():
     except ValueError:
         hook = {}
     global ORCA_CTX
-    ORCA_CTX = orca_context() if mode != "clear" else None
+    if mode == "clear":   # 다시 입력하면 그 세션 말풍선을 내린다 — 소스 설정과 상관없이 (Orca 세션도)
+        on_clear(hook)
+        hook_log(mode, hook, "말풍선 내림")
+        return
+    ORCA_CTX = orca_context()
     on = source_on(ORCA_CTX)
     hook_log(mode, hook, "처리" if on else "꺼짐(소스 설정)")
     if not on:
