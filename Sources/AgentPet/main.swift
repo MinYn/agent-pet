@@ -110,6 +110,8 @@ struct PetRequest {
     /// Orca 세션 추천 답장 — 버튼을 누르면 이 터미널에 replies[i] 를 보낸다
     let orcaHandle: String
     let replies: [String]
+    /// 추천 답장을 만드는 중 — 붙을 때까지(최대 30초) 앱이 숨긴다
+    let pending: Bool
     let tag: String
     let headline: String
     let line: String
@@ -132,6 +134,7 @@ struct PetRequest {
         agent = o["agent"] as? String ?? ""
         orcaHandle = o["orca_handle"] as? String ?? ""
         replies = o["replies"] as? [String] ?? []
+        pending = o["pending"] as? Bool ?? false
         tag = o["tag"] as? String ?? ""
         headline = o["headline"] as? String ?? ""
         line = o["line"] as? String ?? ""
@@ -437,7 +440,7 @@ final class ActionButton: NSButton {
         bezelStyle = .rounded
         controlSize = small ? .small : .regular
         font = small ? BubbleFont.font(11) : BubbleFont.font(12, primary ? .semibold : .regular)
-        if primary { bezelColor = .controlAccentColor; keyEquivalent = "\r" }
+        if primary { bezelColor = .controlAccentColor }   // Enter 단축키는 걸지 않는다 — 다른 곳에서 친 Enter 로 답장이 나가지 않게
         action_ = act
         target = self
         action = #selector(fire)
@@ -977,6 +980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let id = String(f.dropLast(5))
             if hidden[id] != nil { continue }
             guard let r = PetRequest(id: id, path: "\(reqDir)/\(f)") else { continue }
+            if r.pending && now.timeIntervalSince(r.created) < 30 { continue }   // 추천 답장 준비 중 — 다 되면 한 번에 보인다
             if let exp = r.expiresAt, exp < now {   // 만료된 알림은 내림
                 try? fm.removeItem(atPath: "\(reqDir)/\(f)")
                 continue

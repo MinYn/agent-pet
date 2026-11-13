@@ -104,7 +104,8 @@ def main(argv):
     answer = payload.get("last-assistant-message") or ""
     rid = f"codex-{re.sub(r'[^0-9A-Za-z_-]', '', thread)[:24]}"
     write_req(rid, {
-        **({"orca_handle": orca["handle"], "agent_name": "Codex", "stamp": f"{time.time():.6f}"} if orca else {}),
+        **({"orca_handle": orca["handle"], "agent_name": "Codex", "stamp": f"{time.time():.6f}",
+            "pending": bool((settings().get("apps", {}).get("orca") or {}).get("suggest", True))} if orca else {}),
         "source": "orca" if orca else "codex",
         "agent": "codex",
         "tag": f"Orca · Codex · {orca['title'] or os.path.basename(cwd) or '작업'}" if orca

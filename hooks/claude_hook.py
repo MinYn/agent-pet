@@ -137,9 +137,14 @@ def tool_summary(name, tool_input):
     return json.dumps(ti, ensure_ascii=False)[:300]
 
 
+def suggest_on():
+    """이 알림에 Orca 추천 답장을 붙일지"""
+    return bool(ORCA_CTX) and app_setting("orca", "suggest", True)
+
+
 def orca_followup(rid):
     """Orca 세션이면 추천 답장을 백그라운드로 만든다 (메뉴 「알림 범위 › Orca › 추천 답장 만들기」)"""
-    if not ORCA_CTX or not app_setting("orca", "suggest", True):
+    if not suggest_on():
         return
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orca_suggest.py")
     subprocess.Popen([sys.executable, "-I", script, os.path.join(REQ, rid + ".json")],
@@ -158,6 +163,7 @@ def on_stop(hook):
         "detail": plain(answer, 200),
         "full": plain(answer, 4000),
         "full_md": answer[:6000],
+        "pending": suggest_on(),   # 추천 답장이 붙을 때까지 앱이 숨긴다
         "options": [], "ids": [],
         "expires_at": expires_at("claude"),
     })
@@ -184,6 +190,7 @@ def on_notify(hook):
         "detail": plain(hook.get("message", ""), 200),
         "full": plain(hook.get("message", ""), 2000),
         "options": [], "ids": [],
+        "pending": suggest_on() and kind in ("idle_prompt", "agent_needs_input", "elicitation_dialog"),
         "expires_at": expires_at("claude"),
     })
     if kind in ("idle_prompt", "agent_needs_input", "elicitation_dialog"):   # 입력을 기다릴 때만 추천 답장

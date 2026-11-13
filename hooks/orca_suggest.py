@@ -55,33 +55,51 @@ def ask(agent, message):
     return json.loads(m.group(0))
 
 
+def release(path, stamp, update=None):
+    """말풍선을 보이게 한다 — 추천이 있으면 붙이고, 없으면(실패) 그냥 알림으로. 그사이 바뀐 알림이면 손대지 않는다"""
+    cur = load(path)
+    if not cur or cur.get("stamp") != stamp:
+        return
+    cur.update(update or {})
+    cur["pending"] = False
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cur, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def main(path):
     req = load(path)
     if not req or not req.get("orca_handle"):
         return
     stamp = req.get("stamp")
+    update = None
+    try:
+        update = suggestion(req)
+    finally:   # 한 번만 푼다 — 추천이 있으면 버튼과 함께, 실패하면 그냥 알림으로
+        release(path, stamp, update)
+
+
+def suggestion(req):
+    """추천 답장 필드(options·ids·replies·primary·detail) — 못 만들면 None"""
     message = req.get("full_md") or req.get("full") or req.get("detail") or ""
     if not message.strip():
-        return
+        return None
     data = ask(req.get("agent_name") or "에이전트", message)
     opts = [o for o in data.get("options", []) if o.get("label") and o.get("reply")][:3]
     opts.sort(key=lambda o: not o.get("recommended"))   # 추천을 맨 앞에
     if not opts:
-        return
-    cur = load(path)
-    if not cur or cur.get("stamp") != stamp:   # 그사이 닫혔거나 새 알림으로 바뀌었으면 손대지 않는다
-        return
-    cur["options"] = [("⭐ " if o.get("recommended") else "") + o["label"][:18] for o in opts]
-    cur["ids"] = [f"reply:{i}" for i in range(len(opts))]
-    cur["replies"] = [o["reply"] for o in opts]
-    cur["primary"] = 0 if opts[0].get("recommended") else None
+        return None
+    update = {
+        "options": [("⭐ " if o.get("recommended") else "") + o["label"][:18] for o in opts],
+        "ids": [f"reply:{i}" for i in range(len(opts))],
+        "replies": [o["reply"] for o in opts],
+        "primary": 0 if opts[0].get("recommended") else None,
+    }
     reason = (data.get("reason") or "").strip()
     if reason:
-        cur["detail"] = f"⭐ 추천: {reason[:60]} · {cur.get('detail', '')}"[:220]
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cur, f, ensure_ascii=False)
-    os.replace(tmp, path)
+        update["detail"] = f"⭐ 추천: {reason[:60]} · {req.get('detail', '')}"[:220]
+    return update
 
 
 if __name__ == "__main__":
