@@ -972,6 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "sleep": lastActivity = .distantPast; ok = true   // 바로 졸리게 (잠자리로 가는지 시험)
         default:
             if cmd == "update-check" { Updater.check(manual: true); ok = true }
+            else if cmd.hasPrefix("press:") {   // 시험용: 말풍선 버튼 누르기 — press:<요청 id>:<버튼 id>
+                let parts = cmd.split(separator: ":", maxSplits: 2).map(String.init)
+                if parts.count == 3, let r = requests.first(where: { $0.id == parts[1] }) { answer(r, parts[2]); ok = true } else { ok = false }
+            }
             else if cmd.hasPrefix("update-file:") {   // 시험용: 로컬 zip 으로 업데이트 교체
                 Updater.install(from: URL(fileURLWithPath: String(cmd.dropFirst("update-file:".count))))
                 ok = true

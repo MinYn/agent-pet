@@ -32,6 +32,7 @@ enum Updater {
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("AgentPet-Updater", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 15
+        req.cachePolicy = .reloadIgnoringLocalCacheData   // 예전 응답(옛 최신 버전)을 캐시에서 읽지 않게
         URLSession.shared.dataTask(with: req) { data, _, error in
             DispatchQueue.main.async {
                 Settings.shared.data["update_checked_at"] = Date().timeIntervalSince1970
