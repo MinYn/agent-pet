@@ -51,21 +51,15 @@ def claude_install(src):
         with open(CLAUDE_SETTINGS, encoding="utf-8") as f:
             s = json.load(f)
     hooks = s.setdefault("hooks", {})
+    remove_ours(hooks)   # 예전 경로의 우리 훅은 빼고 지금 경로로 다시 (중복·옛 경로 방지)
     for ev, groups in add.items():
-        cur = hooks.setdefault(ev, [])
-        if any(MARK in c.get("command", "") for g in cur for c in g.get("hooks", [])):
-            continue   # 이미 있음 (다시 설치해도 중복되지 않게)
-        cur.extend(groups)
+        hooks.setdefault(ev, []).extend(groups)
     write_atomic(CLAUDE_SETTINGS, json.dumps(s, indent=2, ensure_ascii=False) + "\n")
     print(f"  Claude Code 훅 등록: {CLAUDE_SETTINGS}")
 
 
-def claude_uninstall():
-    if not os.path.exists(CLAUDE_SETTINGS):
-        return
-    with open(CLAUDE_SETTINGS, encoding="utf-8") as f:
-        s = json.load(f)
-    hooks = s.get("hooks") or {}
+def remove_ours(hooks):
+    """hooks 에서 AgentPet 훅만 뺀다 — 빈 그룹·이벤트는 지운다"""
     for ev in list(hooks):
         groups = []
         for g in hooks[ev]:
@@ -76,6 +70,14 @@ def claude_uninstall():
             hooks[ev] = groups
         else:
             del hooks[ev]
+
+
+def claude_uninstall():
+    if not os.path.exists(CLAUDE_SETTINGS):
+        return
+    with open(CLAUDE_SETTINGS, encoding="utf-8") as f:
+        s = json.load(f)
+    remove_ours(s.get("hooks") or {})
     write_atomic(CLAUDE_SETTINGS, json.dumps(s, indent=2, ensure_ascii=False) + "\n")
     print(f"  Claude Code 훅 제거: {CLAUDE_SETTINGS}")
 
@@ -96,8 +98,15 @@ def codex_install(src):
         print("  Codex 없음 — 건너뜀")
         return
     text = open(CODEX_CONFIG, encoding="utf-8").read() if os.path.exists(CODEX_CONFIG) else ""
-    if "codex_notify.py" in text:
-        print("  Codex notify 이미 등록됨")
+    if "codex_notify.py" in text:   # 이미 있으면 스크립트 경로만 지금 앱 위치로
+        m = NOTIFY_RE.search(text)
+        items = json.loads("[" + re.sub(r",\s*$", "", m.group(1).strip()) + "]") if m else []
+        fixed = [f"{src}/codex_notify.py" if x.endswith("codex_notify.py") else x for x in items]
+        if m and fixed != items:
+            write_atomic(CODEX_CONFIG, text[:m.start()] + toml_list(fixed) + text[m.end():])
+            print("  Codex notify 경로 갱신")
+        else:
+            print("  Codex notify 이미 등록됨")
         return
     backup(CODEX_CONFIG)
     wrapper = ["/usr/bin/python3", "-I", f"{src}/codex_notify.py", "--"]
@@ -142,7 +151,18 @@ def skill_uninstall():
         print(f"  Claude Code 스킬 제거: {SKILL_DST}")
 
 
+def status(src):
+    """연동이 지금 앱 위치로 걸려 있는지 — ok / stale(옛 경로) / none"""
+    text = open(CLAUDE_SETTINGS, encoding="utf-8").read() if os.path.exists(CLAUDE_SETTINGS) else ""
+    if MARK not in text:
+        return "none"
+    return "ok" if f"{src}/{MARK}" in text else "stale"
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "status":
+        print(status(sys.argv[2]))
+        return 0
     if len(sys.argv) >= 4 and sys.argv[1] == "install":
         claude_install(sys.argv[2])
         codex_install(sys.argv[2])

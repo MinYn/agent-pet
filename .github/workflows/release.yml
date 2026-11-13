@@ -1,0 +1,39 @@
+# 태그(v*)를 올리면 macOS 에서 빌드해 Release 에 AgentPet.dmg · AgentPet.zip 을 첨부한다.
+# 이미 있는 태그에 첨부하려면 Actions 탭에서 「release」를 수동 실행하고 태그를 넣는다.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "첨부할 태그 (예: v0.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: 빌드 · 패키징
+        run: |
+          swiftc --version
+          VERSION="${TAG#v}" scripts/build.sh
+          scripts/package.sh
+
+      - name: Release 에 첨부
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "AgentPet ${TAG#v}" --generate-notes
+          gh release upload "$TAG" dist/AgentPet.dmg dist/AgentPet.zip --clobber

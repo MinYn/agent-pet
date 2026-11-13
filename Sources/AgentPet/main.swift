@@ -944,6 +944,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.runner.scanMultica() }
         runner.scanMultica()
         pollRequests()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {   // 연동 확인(처음이면 묻기) · 업데이트 확인(하루 한 번)
+            Integration.checkOnLaunch()
+            Updater.checkDaily()
+        }
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in Updater.checkDaily() }
     }
 
     // -------------------------------------------------------------------------
@@ -965,7 +970,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "dockhop": behavior = .dockHop; dockHops = 3; behaviorUntil = now.addingTimeInterval(8); ok = startDockHop(now)
         case "hopdown": behavior = .hopDown; place = .falling(vy: 260, vx: 70); ok = true
         case "sleep": lastActivity = .distantPast; ok = true   // 바로 졸리게 (잠자리로 가는지 시험)
-        default: ok = false
+        default:
+            if cmd == "update-check" { Updater.check(manual: true); ok = true }
+            else if cmd.hasPrefix("update-file:") {   // 시험용: 로컬 zip 으로 업데이트 교체
+                Updater.install(from: URL(fileURLWithPath: String(cmd.dropFirst("update-file:".count))))
+                ok = true
+            } else { ok = false }
         }
         motionLog("명령 \(cmd) → \(ok) 장소=\(place)")
     }
@@ -1059,7 +1069,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hidden[r.id] = Date()
         if decision.hasPrefix("reply:") { happyUntil = Date().addingTimeInterval(2) }
         lastActivity = Date()
-        if r.source == "multica" {
+        if r.source == "pet" && (decision.hasPrefix("update:") || decision.hasPrefix("integration:")) {
+            try? fm.removeItem(atPath: "\(reqDir)/\(r.id).json")   // 펫 자체 안내 — 앱이 직접 처리
+            try? fm.removeItem(atPath: path)
+            if decision.hasPrefix("update:") { Updater.handle(decision) } else { Integration.handle(decision) }
+        } else if r.source == "multica" {
             runner.respondMultica()
         } else if r.source == "orca", decision.hasPrefix("reply:"), !r.orcaHandle.isEmpty,
                   let i = Int(decision.dropFirst(6)), i < r.replies.count {   // Orca 추천 답장 → 그 터미널에 입력하고 제출
@@ -1369,6 +1383,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func showMenu(_ e: NSEvent) {
         let menu = NSMenu()
+        if let av = Updater.available {   // 새 버전이 남아 있는 동안 계속 보인다 (건너뛴 버전도)
+            menu.addItem(item("⬆︎ \(av.version) 로 업데이트 (지금 \(Updater.current))") { Updater.handle("update:install") })
+            menu.addItem(.separator())
+        }
         if !requests.isEmpty {
             menu.addItem(item("다음 알림 \(requests.count)개 보기") { [weak self] in self?.bubbleOpen = true; self?.refreshBubble() })
             menu.addItem(.separator())
@@ -1446,6 +1464,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Settings.shared.home = self.petPanel.frame.origin
         })
         menu.addItem(item("데이터 폴더 열기") { NSWorkspace.shared.open(URL(fileURLWithPath: petDir)) })
+        menu.addItem(.separator())
+        let linked = Integration.choice == "on"
+        menu.addItem(item(linked ? "연동 설정… (Claude Code·Codex 연결됨)" : "연동 설정… (Claude Code·Codex 연결 안 됨)") {
+            Integration.promptInstall()
+        })
+        menu.addItem(item("업데이트 확인… (지금 \(Updater.current))") { Updater.check(manual: true) })
         menu.addItem(.separator())
         menu.addItem(item("펫 종료") { NSApp.terminate(nil) })
         NSMenu.popUpContextMenu(menu, with: e, for: petView)
