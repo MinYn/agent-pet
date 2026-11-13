@@ -1219,18 +1219,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 새 알림 — 마우스가 있는 모니터(지금 보고 있는 곳)로 와서 알린다
     func summon() {
         let mouse = NSEvent.mouseLocation
-        guard let sc = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
+        let mouseScreen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+        // 모니터 설정을 따른다 — 따라다니기를 켜면 마우스 모니터, 끄면 메뉴에서 고른 모니터
+        let sc = followMouse ? (mouseScreen ?? preferredScreen()) : preferredScreen()
         let f = petPanel.frame
-        let tx = min(max(mouse.x - f.width / 2, sc.frame.minX + 20), sc.frame.maxX - f.width - 20)
+        let mouseHere = mouseScreen == sc
         sleepTarget = nil
+        // 마우스가 그 모니터에 있으면 마우스 아래로, 아니면 지금 x 를 그대로 (그 모니터 안으로만)
+        let wantX = mouseHere ? mouse.x - f.width / 2 : f.minX
+        let tx = min(max(wantX, sc.frame.minX + 20), sc.frame.maxX - f.width - 20)
+        let onScreen = sc.frame.contains(NSPoint(x: f.midX, y: f.midY))
         if !windowPlay {   // 창 놀기를 끄면 그 모니터 아래쪽으로 바로
-            petPanel.setFrameOrigin(NSPoint(x: tx, y: sc.visibleFrame.minY + 10))
+            if mouseHere || !onScreen { petPanel.setFrameOrigin(NSPoint(x: tx, y: sc.visibleFrame.minY + 10)) }
             return
         }
-        if !sc.frame.contains(NSPoint(x: f.midX, y: f.midY)) {   // 다른 모니터 → 구석으로 순간이동한 뒤 달려온다
-            travel(to: sc, x: tx, runTo: tx)
+        if !onScreen {   // 다른 모니터에 있으면 그 모니터 구석으로 순간이동 (마우스가 거기 있으면 이어서 점프해 온다)
+            travel(to: sc, x: tx, runTo: mouseHere ? tx : nil)
             return
         }
+        guard mouseHere else { return }   // 마우스가 다른 모니터 — 그 자리에서 손짓만
         summonTarget = tx
         _ = hopDownIfOnWindow(towardRight: tx > f.minX)
     }
