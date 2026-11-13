@@ -105,8 +105,11 @@ final class Settings {
 struct PetRequest {
     let id: String
     let source: String
-    /// Orca 세션일 때 실제 도구(claude·codex) — 그 소스도 켜져 있어야 보인다
+    /// Orca 세션일 때 실제 도구(claude·codex)
     let agent: String
+    /// Orca 세션 추천 답장 — 버튼을 누르면 이 터미널에 replies[i] 를 보낸다
+    let orcaHandle: String
+    let replies: [String]
     let tag: String
     let headline: String
     let line: String
@@ -127,6 +130,8 @@ struct PetRequest {
         self.id = id
         source = o["source"] as? String ?? (id.hasPrefix("demo") ? "demo" : "multica")
         agent = o["agent"] as? String ?? ""
+        orcaHandle = o["orca_handle"] as? String ?? ""
+        replies = o["replies"] as? [String] ?? []
         tag = o["tag"] as? String ?? ""
         headline = o["headline"] as? String ?? ""
         line = o["line"] as? String ?? ""
@@ -184,6 +189,19 @@ final class SourceRunner {
     func makeCharacter(_ prompt: String, done: @escaping () -> Void) {
         run("make-character-\(Date().timeIntervalSince1970)", ["-I", resourceDir + "/sources/make_character.py", "--prompt", prompt],
             completion: done)
+    }
+
+    /// Orca 터미널에 답장 입력 + Enter — 결과는 orca.log
+    func sendToOrca(handle: String, text: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
+        p.arguments = ["terminal", "send", "--terminal", handle, "--text", text, "--enter", "--wait-submit", "5", "--json"]
+        let logPath = petDir + "/orca.log"
+        fm.createFile(atPath: logPath, contents: nil)
+        let log = FileHandle(forWritingAtPath: logPath)
+        p.standardOutput = log ?? FileHandle.nullDevice
+        p.standardError = log ?? FileHandle.nullDevice
+        try? p.run()
     }
 
     func undismissMultica() {
@@ -1039,6 +1057,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastActivity = Date()
         if r.source == "multica" {
             runner.respondMultica()
+        } else if r.source == "orca", decision.hasPrefix("reply:"), !r.orcaHandle.isEmpty,
+                  let i = Int(decision.dropFirst(6)), i < r.replies.count {   // Orca 추천 답장 → 그 터미널에 입력하고 제출
+            runner.sendToOrca(handle: r.orcaHandle, text: r.replies[i])
+            try? fm.removeItem(atPath: "\(reqDir)/\(r.id).json")
+            try? fm.removeItem(atPath: path)
         } else if !r.awaitsResponse {   // 기다리는 훅이 없는 알림(작업 완료 등)은 앱이 바로 정리
             try? fm.removeItem(atPath: "\(reqDir)/\(r.id).json")
             try? fm.removeItem(atPath: path)
@@ -1573,6 +1596,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case "orca":
                 sub.addItem(header("Orca 에서 실행한 Claude Code·Codex 세션 — Claude·Codex 를 꺼도 따로 알림"))
                 sub.addItem(header("알림을 누르면 그 Orca 탭으로 이동해요"))
+                sub.addItem(.separator())
+                let rec = Settings.shared.app("orca", "suggest", true)
+                sub.addItem(item("추천 답장 만들기 — 누르면 그 터미널에 입력 (Claude)", checked: rec) {
+                    Settings.shared.setApp("orca", "suggest", !rec)
+                })
             default: break
             }
             let top = NSMenuItem(title: s.label + (Settings.shared.sourceOn(s.key) ? "" : " (꺼짐)"), action: nil, keyEquivalent: "")

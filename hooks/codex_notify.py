@@ -93,7 +93,7 @@ def main(argv):
         payload = json.loads(payload_raw)
     except ValueError:
         return
-    if payload.get("type") != "agent-turn-complete":
+    if payload.get("type") != "agent-turn-complete" or os.environ.get("AGENT_PET_INTERNAL"):
         return
     orca = orca_context()
     if not source_on(orca):
@@ -102,7 +102,9 @@ def main(argv):
     cwd = payload.get("cwd") or ""
     asked = (payload.get("input-messages") or [""])[-1]
     answer = payload.get("last-assistant-message") or ""
-    write_req(f"codex-{re.sub(r'[^0-9A-Za-z_-]', '', thread)[:24]}", {
+    rid = f"codex-{re.sub(r'[^0-9A-Za-z_-]', '', thread)[:24]}"
+    write_req(rid, {
+        **({"orca_handle": orca["handle"], "agent_name": "Codex", "stamp": f"{time.time():.6f}"} if orca else {}),
         "source": "orca" if orca else "codex",
         "agent": "codex",
         "tag": f"Orca · Codex · {orca['title'] or os.path.basename(cwd) or '작업'}" if orca
@@ -117,6 +119,10 @@ def main(argv):
         "link": f"orca-terminal:{orca['handle']}" if orca else (f"file://{cwd}" if cwd else ""),
         "expires_at": expires_at(),
     })
+    if orca and (settings().get("apps", {}).get("orca") or {}).get("suggest", True):   # Orca 세션이면 추천 답장
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orca_suggest.py")
+        subprocess.Popen([sys.executable, "-I", script, os.path.join(REQ, rid + ".json")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 if __name__ == "__main__":

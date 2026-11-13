@@ -109,6 +109,8 @@ def base(hook, orca=None):
     if orca:
         return {
             "source": "orca", "agent": "claude",
+            "orca_handle": orca["handle"], "agent_name": "Claude Code",
+            "stamp": f"{time.time():.6f}",   # 추천 답장이 늦게 붙을 때 같은 알림인지 확인
             "tag": f"Orca · Claude Code · {orca['title'] or os.path.basename(cwd) or '세션'}",
             "openLabel": "Orca에서 보기",
             "link": f"orca-terminal:{orca['handle']}",
@@ -135,11 +137,21 @@ def tool_summary(name, tool_input):
     return json.dumps(ti, ensure_ascii=False)[:300]
 
 
+def orca_followup(rid):
+    """Orca 세션이면 추천 답장을 백그라운드로 만든다 (메뉴 「알림 범위 › Orca › 추천 답장 만들기」)"""
+    if not ORCA_CTX or not app_setting("orca", "suggest", True):
+        return
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orca_suggest.py")
+    subprocess.Popen([sys.executable, "-I", script, os.path.join(REQ, rid + ".json")],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 def on_stop(hook):
     if hook.get("stop_hook_active") or not app_setting("claude", "stop", True):
         return
     answer = hook.get("last_assistant_message") or ""
-    write_req(f"claude-{safe(hook.get('session_id'))}", {
+    rid = f"claude-{safe(hook.get('session_id'))}"
+    write_req(rid, {
         **base(hook, ORCA_CTX),
         "headline": "작업 완료!",
         "line": "",
@@ -149,6 +161,7 @@ def on_stop(hook):
         "options": [], "ids": [],
         "expires_at": expires_at("claude"),
     })
+    orca_followup(rid)
 
 
 def on_notify(hook):
@@ -173,6 +186,8 @@ def on_notify(hook):
         "options": [], "ids": [],
         "expires_at": expires_at("claude"),
     })
+    if kind in ("idle_prompt", "agent_needs_input", "elicitation_dialog"):   # 입력을 기다릴 때만 추천 답장
+        orca_followup(f"claude-{sid}")
 
 
 def on_clear(hook):
@@ -220,6 +235,8 @@ def on_permission(hook):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if os.environ.get("AGENT_PET_INTERNAL"):   # 펫이 띄운 claude -p (추천 답장 등) 는 알리지 않는다
+        return
     try:
         hook = json.load(sys.stdin)
     except ValueError:
