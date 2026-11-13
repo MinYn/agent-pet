@@ -240,6 +240,20 @@ def on_permission(hook):
     # 그 밖(닫기·열기·시간 초과)은 결정 없이 끝 → 터미널에서 평소처럼 묻는다
 
 
+def hook_log(mode, hook, result):
+    """훅이 불린 기록 — 알림이 안 뜰 때 원인을 보려고 (최근 500줄만 유지)"""
+    path = os.path.join(PET, "hook.log")
+    line = (f"{time.strftime('%m-%d %H:%M:%S')} {mode} 세션={safe(hook.get('session_id'))} "
+            f"orca={'예' if ORCA_CTX else '아니오'} 종류={hook.get('notification_type', '')} → {result}\n")
+    try:
+        os.makedirs(PET, exist_ok=True)
+        lines = open(path, encoding="utf-8").readlines()[-499:] if os.path.exists(path) else []
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines + [line])
+    except OSError:
+        pass
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if os.environ.get("AGENT_PET_INTERNAL"):   # 펫이 띄운 claude -p (추천 답장 등) 는 알리지 않는다
@@ -250,7 +264,9 @@ def main():
         hook = {}
     global ORCA_CTX
     ORCA_CTX = orca_context() if mode != "clear" else None
-    if not source_on(ORCA_CTX):
+    on = source_on(ORCA_CTX)
+    hook_log(mode, hook, "처리" if on else "꺼짐(소스 설정)")
+    if not on:
         return
     {"stop": on_stop, "notify": on_notify, "clear": on_clear, "permission": on_permission}.get(mode, lambda h: None)(hook)
 

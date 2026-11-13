@@ -62,7 +62,7 @@ QUEUED = {"backlog", "todo"}                # 앞 단계를 기다리는 하위 
 QA_STATUS = "qa"                            # 「QA 중」 — QA 요청·결과를 기다리는 중
 LEADER = "SDD 리더"                          # 스쿼드 설치가 만드는 리더 이름 앞부분 — 리더는 최상위 이슈만 본다
 HUMAN_WAIT = {"decision", "pr-approval", "qa-human", "deploy"}   # 사람을 기다리는 waiting_for (ci·review는 에이전트 대기)
-STUCK_MIN = 20
+STUCK_MIN = 5   # 기본 — 펫 메뉴 「알림 범위 › Multica › 멈춤 알림 기준」(apps.multica.stuck_min) 로 바꾼다
 WAIT_LABEL = {"decision": "결정이 필요해요", "pr-approval": "PR 승인을 기다려요", "qa-human": "QA 확인이 필요해요", "deploy": "배포를 기다려요"}
 REPLIES = {   # 「all」 범위의 기본 답장 (선택 대기는 댓글이 정해 준 답으로 버튼을 만든다)
     "turn": ["좋아요, 진행해 주세요", "잠깐 보류해 주세요"],
@@ -134,6 +134,15 @@ def plain(text, limit=170):
     t = re.sub(r"[*_`#>|]", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t if len(t) <= limit else t[: limit - 1] + "…"
+
+
+def stuck_minutes():
+    """멈춤 알림 기준(분) — 마지막 활동 뒤 이만큼 조용하면 알린다"""
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            return int((json.load(f).get("apps", {}).get("multica") or {}).get("stuck_min", STUCK_MIN))
+    except (OSError, ValueError, TypeError):
+        return STUCK_MIN
 
 
 def scope():
@@ -277,10 +286,11 @@ def classify(issue, parents, leaders=()):
         return "turn", "검토를 기다려요" if issue.get("status") == "in_review" else "답을 기다리고 있어요", runs
     if sub == "human":
         return "human", "사람 차례예요 · 하위 이슈가 모두 끝났어요", runs
-    # 멈춤: 메뉴바는 바로 빨간 줄이지만, 실행 사이 잠깐 빈 틈마다 말풍선이 뜨지 않게 STUCK_MIN 분은 기다린다
-    if minutes_since(issue.get("last_activity_at")) <= STUCK_MIN:
+    # 멈춤: 메뉴바는 바로 빨간 줄이지만, 실행 사이 잠깐 빈 틈마다 말풍선이 뜨지 않게 몇 분은 기다린다
+    stuck_min = stuck_minutes()
+    if minutes_since(issue.get("last_activity_at")) <= stuck_min:
         return None, "", runs
-    return "stuck", f"{STUCK_MIN}분 넘게 멈춰 있어요", runs
+    return "stuck", f"{stuck_min}분 넘게 멈춰 있어요", runs
 
 
 MENTION = re.compile(r"\[@?([^\]]*)\]\(mention://(member|agent|issue)/([0-9a-f-]+)\)")

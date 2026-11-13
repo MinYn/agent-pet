@@ -650,6 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 모니터 옮겨 가기 — 사라지는 중(그다음 targetScreen 위쪽에서 나타나 떨어진다)
     var transit: (start: Date, screen: NSScreen, x: CGFloat, runTo: CGFloat?)?
     var appearAt = Date.distantPast
+    var outsideSince: Date?
     var mouseScreenSince: (name: String, at: Date)?
     var followMouse: Bool { Settings.shared.data["follow_mouse_screen"] as? Bool ?? false }
     var sleepTarget: CGFloat?    // 잠자리(구석) x
@@ -693,7 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 target = Int.random(in: 0..<5) == 0 ? (Bool.random() ? lo - 40 : hi + 40) : near
             }
             if abs(target - x) < 15 { target = x + (Bool.random() ? 30 : -30) }
-            walkTarget = target
+            walkTarget = clampToScreen(target)   // 설정한 모니터 밖으로는 걸어가지 않는다
             walkSpeed = CGFloat.random(in: 18...28)
             behaviorUntil = now.addingTimeInterval(20)   // 도착하면 그 전에 끝난다
         case .stand: behaviorUntil = now.addingTimeInterval(Double.random(in: 1.5...4.5))
@@ -764,7 +765,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for w in windows where w.top > f.minY + 40 && w.top < f.minY + 850 && w.id != perchedWindow?.id {
             let tx = min(max(f.midX, w.frame.minX + half + 10), w.frame.maxX - half - 10)   // 윗변에서 펫과 가장 가까운 자리
             let dist = abs(tx - f.midX)
-            guard dist < 800, WindowWorld.topVisible(w, x: tx, in: windows),
+            guard dist < 800, homeScreen().frame.contains(NSPoint(x: tx, y: w.top + 1)),   // 설정한 모니터 안의 창만
+                  WindowWorld.topVisible(w, x: tx, in: windows),
                   WindowWorld.roomAbove(w, x: tx, height: f.height) else { continue }
             if best == nil || dist < best!.2 { best = (w, tx, dist) }
         }
@@ -801,7 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .falling(var vy, let vx):
             vy -= 1600.0 / 30   // 중력
             let ny = f.minY + vy / 30
-            let nx = f.minX + vx / 30
+            let nx = clampToScreen(f.minX + vx / 30)
             let cx = nx + f.width / 2
             let sc = screenAt(x: cx, y: f.minY)
             var land = groundY(at: cx, y: f.minY)
@@ -1370,6 +1372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         petView.needsDisplay = true
         let kind = "\(place)".components(separatedBy: "(").first ?? ""
         if kind != lastPlaceKind { motionLog("장소 \(lastPlaceKind) → \(place)"); lastPlaceKind = kind }
+        keepOnHomeScreen(now)
         let origin = petPanel.frame.origin
         if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
         lastOrigin = origin
@@ -1514,6 +1517,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if bubblePanel.isVisible { layoutBubble() }
     }
 
+    /// 펫이 머물 모니터 — 메뉴에서 고른 모니터 (따라다니기를 켜면 옮겨 갈 때마다 바뀐다)
+    func homeScreen() -> NSScreen { preferredScreen() }
+
+    /// x 를 머물 모니터 안으로
+    func clampToScreen(_ x: CGFloat) -> CGFloat {
+        let f = homeScreen().frame
+        return min(max(x, f.minX + 4), f.maxX - petPanel.frame.width - 4)
+    }
+
+    /// 머물 모니터를 1초 넘게 벗어나 있으면(올라탄 창이 다른 모니터로 옮겨졌을 때 등) 그 모니터로 돌아온다
+    func keepOnHomeScreen(_ now: Date) {
+        guard frameTick % 10 == 0, transit == nil else { return }
+        switch place { case .held, .leaping: return; default: break }
+        let f = petPanel.frame
+        let sc = homeScreen()
+        if sc.frame.contains(NSPoint(x: f.midX, y: f.minY + 4)) { outsideSince = nil; return }
+        if outsideSince == nil { outsideSince = now; return }
+        if now.timeIntervalSince(outsideSince!) >= 1 {
+            outsideSince = nil
+            motionLog("모니터 밖 → \(sc.localizedName) 로 돌아옴")
+            travel(to: sc, x: clampToScreen(f.minX))
+        }
+    }
+
     func preferredScreen() -> NSScreen {
         NSScreen.screens.first { $0.localizedName == Settings.shared.display } ?? NSScreen.main ?? NSScreen.screens[0]
     }
@@ -1609,6 +1636,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                      ("all", "내가 볼 것 전부 (메뉴바 빨간 줄 모두)")] {
                     sub.addItem(item(title, checked: Settings.shared.scope == key) { [weak self] in
                         Settings.shared.scope = key
+                        self?.runner.scanMultica()
+                    })
+                }
+                sub.addItem(.separator())
+                sub.addItem(header("멈춤 알림 기준 (마지막 활동 뒤)"))
+                let cur = Settings.shared.app("multica", "stuck_min", 5)
+                for m in [3, 5, 10, 20] {
+                    sub.addItem(item("\(m)분" + (m == 5 ? " (기본)" : ""), checked: cur == m) { [weak self] in
+                        Settings.shared.setApp("multica", "stuck_min", m)
                         self?.runner.scanMultica()
                     })
                 }
