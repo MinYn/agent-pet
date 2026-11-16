@@ -1537,8 +1537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if kind != lastPlaceKind { motionLog("장소 \(lastPlaceKind) → \(place)"); lastPlaceKind = kind }
         keepOnHomeScreen(now)
         let origin = petPanel.frame.origin
-        if bubblePanel.isVisible, origin != lastOrigin, !bubbleHeld { layoutBubble() }   // 잡고 있는 동안 말풍선은 제자리
-        lastOrigin = origin
+        if !bubbleHeld {   // 잡고 있는 동안 말풍선은 제자리 — 놓으면 그사이 움직인 펫 위치로 다시 맞춘다
+            if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
+            lastOrigin = origin
+        }
     }
 
     // -------------------------------------------------------------------------
