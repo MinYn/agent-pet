@@ -435,19 +435,19 @@ final class PetView: NSView {
 /// 말풍선 창 — 입력 칸을 누를 때만 키보드 입력을 받는다 (테두리 없는 패널은 기본적으로 못 받는다)
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    /// 빈 곳·글자를 끌 때 — 마우스 이동량(화면 좌표)
+    /// 빈 곳을 끌 때 — 마우스 이동량(화면 좌표)
     var onDrag: ((NSPoint) -> Void)?
     var onDragEnd: (() -> Void)?
     private var grabAt: NSPoint?
     private var dragging = false
 
-    /// 버튼·입력 칸·펼친 본문(스크롤·글자 선택)은 원래대로 동작한다
+    /// 버튼·입력 칸·글자·펼친 본문(스크롤·글자 선택)은 원래대로 동작한다
     private func grabbable(_ e: NSEvent) -> Bool {
         guard onDrag != nil, let cv = contentView,
               var v = cv.hitTest(cv.convert(e.locationInWindow, from: nil)) else { return false }
         while true {
             if v is NSButton || v is NSTextView || v is NSScroller || v is NSScrollView { return false }
-            if let tf = v as? NSTextField, tf.isEditable { return false }
+            if v is NSTextField { return false }   // 글자 위를 끌면 글자 선택
             guard let up = v.superview, v !== cv else { return true }
             v = up
         }
