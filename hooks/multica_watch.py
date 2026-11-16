@@ -312,10 +312,17 @@ MENTION = re.compile(r"\[@?([^\]]*)\]\(mention://(member|agent|issue)/([0-9a-f-]
 
 
 def ask_comment(comments):
-    """사람을 부른 에이전트 댓글 — 첫 줄에 사람(member) 멘션이 있는 가장 최근 댓글. 없으면 가장 최근 에이전트 댓글"""
-    agent = [c for c in comments if c.get("author_type") == "agent"]
-    calling = [c for c in agent if "mention://member/" in (c.get("content") or "").split("\n")[0]]
-    return max(calling or agent, key=lambda c: c.get("created_at") or "", default=None)
+    """사람에게 보여 줄 에이전트 댓글 — 지금 상태를 말하는 가장 최근 댓글.
+    · 다른 에이전트를 부르는 댓글(첫 줄이 agent 멘션: 리뷰 요청·넘김 등)은 사람 몫이 아니라 건너뛴다
+    · 첫 줄에 사람 멘션이 없어도 그 뒤에 단 댓글이 지금 상태다 — 예전 질문(이미 끝난 push 승인 요청 등)을
+      다시 띄우면 같은 답이 반복해서 나간다 (PRT-1054: 끝난 push 승인 요청이 계속 떠 「push 승인」이 8번 달림)"""
+    key = lambda c: c.get("created_at") or ""
+    agent = sorted((c for c in comments if c.get("author_type") == "agent"), key=key)
+    to_human = [c for c in agent
+                if not ((c.get("content") or "").lstrip().split("\n")[0].startswith("[@")
+                        and "mention://agent/" in (c.get("content") or "").split("\n")[0]
+                        and "mention://member/" not in (c.get("content") or "").split("\n")[0])]
+    return (to_human or agent or [None])[-1]
 
 
 def question_of(text):
