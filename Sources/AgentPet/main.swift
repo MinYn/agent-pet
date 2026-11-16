@@ -1456,6 +1456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if let moved = physics(now) {   // 점프·낙하 중엔 행동 대신 그 동작
             frame = moved
             if case .falling = place { tilt = CGFloat(sin(t * 9)) * 6 }   // 떨어질 땐 버둥버둥
+        } else if bubbleHeld {   // 말풍선을 잡고 있으면 무슨 행동이든 멈추고 가만히 있는다
+            summonTarget = nil
+            walkTarget = nil
+            frame = requests.isEmpty ? "idle" : "special"
         } else if now.timeIntervalSince(landedAt) < 0.18 {   // 착지 찌그러짐
             squash = 0.18 * CGFloat(1 - now.timeIntervalSince(landedAt) / 0.18)
         } else if now < happyUntil {   // 답장·클릭 직후 기뻐서 높이 뜀
@@ -1463,7 +1467,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (bob, squash) = hop(t, period: 0.45, height: 12)
         } else if !requests.isEmpty {   // 알림: 보고 있는 곳까지 달려온 뒤 제자리에서 손짓
             walkTarget = nil
-            if summonTarget != nil, bubbleHeld { summonTarget = nil }   // 말풍선을 잡으면 그 자리에 멈춘다
             if let target = summonTarget, windowPlay, summonHop(toward: target, now: now) {   // 폴짝폴짝 점프해서 다가온다
                 frame = "happy"
             } else if let target = summonTarget, !windowPlay, let st = walkStep(toward: target, speed: 110, now: now, t: t) {
