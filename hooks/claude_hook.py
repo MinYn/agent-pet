@@ -206,23 +206,45 @@ def on_clear(hook):
     remove(os.path.join(REQ, f"claude-{safe(hook.get('session_id'))}.json"))
 
 
-def on_permission(hook):
-    """펫 버튼의 답을 stdout 결정으로 돌려준다. 답이 없으면 아무것도 출력하지 않고 끝나 평소처럼 터미널에서 묻는다"""
-    if not settings().get("claude_permission") or not pet_running():
-        return
-    name = hook.get("tool_name", "")
-    summary = tool_summary(name, hook.get("tool_input"))
-    rid = f"claude-perm-{safe(hook.get('session_id'))}-{int(time.time() * 1000) % 10**9}"
-    write_req(rid, {
-        **base(hook, ORCA_CTX),
-        "headline": f"허용할까요? · {name}",
-        "line": "",
-        "detail": plain(summary, 200),
-        "full": summary[:4000],
-        "options": ["허용", "거부"], "ids": ["allow", "deny"], "primary": 0,
-        "await": True,
-        "expires_at": time.time() + PERMISSION_WAIT_SEC,
-    })
+def ask_questions(tool_input):
+    """AskUserQuestion 입력 → 말풍선 질문 모드 목록 (질문마다 번호 붙은 선택지)"""
+    out, seen = [], set()
+    for i, q in enumerate((tool_input or {}).get("questions") or []):
+        qid = (q.get("header") or "").strip() or str(i + 1)
+        if qid in seen:
+            qid = f"{qid}{i + 1}"
+        seen.add(qid)
+        opts = [{"no": str(k + 1), "label": o.get("label", "")} for k, o in enumerate(q.get("options") or [])]
+        out.append({"id": qid, "title": q.get("question", ""), "free": not opts, "options": opts})
+    return out
+
+
+def ask_markdown(tool_input):
+    """「자세히 보기」에 펼칠 질문·선택지 설명"""
+    lines = []
+    for i, q in enumerate((tool_input or {}).get("questions") or []):
+        lines.append(f"**{i + 1}. {q.get('question', '')}**" + (" (여러 개 고를 수 있음)" if q.get("multiSelect") else ""))
+        for k, o in enumerate(q.get("options") or []):
+            desc = o.get("description") or ""
+            lines.append(f"- {k + 1}. {o.get('label', '')}" + (f" — {desc}" if desc else ""))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def ask_answers(tool_input, picked):
+    """말풍선 답 {질문id: 번호 또는 직접 적은 글} → AskUserQuestion answers {질문 원문: 선택지 이름}"""
+    answers = {}
+    for spec, q in zip(ask_questions(tool_input), (tool_input or {}).get("questions") or []):
+        v = (picked.get(spec["id"]) or "").strip()
+        if not v:
+            return None
+        label = next((o["label"] for o in spec["options"] if o["no"] == v), v)
+        answers[q.get("question", "")] = label
+    return answers
+
+
+def wait_decision(rid):
+    """펫 말풍선 답을 기다린다 — 닫기·시간 초과면 None. 요청·응답 파일은 정리한다"""
     resp = os.path.join(RESP, rid + ".json")
     deadline = time.time() + PERMISSION_WAIT_SEC
     decision = None
@@ -239,9 +261,70 @@ def on_permission(hook):
     finally:
         remove(resp)
         remove(os.path.join(REQ, rid + ".json"))
+    return decision
+
+
+def permission_output(decision):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}},
+                     ensure_ascii=False))
+
+
+def on_ask(hook):
+    """AskUserQuestion(선택형 질문) — JSON 대신 질문 모드 말풍선으로 묻고, 고른 답을 그대로 넘긴다"""
+    ti = hook.get("tool_input") or {}
+    questions = ask_questions(ti)
+    if not questions:
+        return
+    rid = f"claude-perm-{safe(hook.get('session_id'))}-{int(time.time() * 1000) % 10**9}"
+    first = questions[0]["title"]
+    write_req(rid, {
+        **base(hook, ORCA_CTX),
+        "headline": "선택이 필요해요" + (f" · 질문 {len(questions)}개" if len(questions) > 1 else ""),
+        "line": "",
+        "detail": plain(first, 200),
+        "full": plain(ask_markdown(ti), 4000),
+        "full_md": ask_markdown(ti)[:6000],
+        "questions": questions,
+        "options": [], "ids": [],
+        "await": True,
+        "expires_at": time.time() + PERMISSION_WAIT_SEC,
+    })
+    decision = wait_decision(rid)
+    if not (decision or "").startswith("multi:"):
+        hook_log("ask", hook, f"답 없음({decision})")
+        return   # 답이 없으면 결정 없이 끝 → 터미널에서 평소처럼 묻는다
+    try:
+        answers = ask_answers(ti, json.loads(decision[len("multi:"):]))
+    except ValueError:
+        answers = None
+    if answers:
+        permission_output({"behavior": "allow", "updatedInput": {**ti, "answers": answers}})
+    hook_log("ask", hook, f"답={answers}" if answers else f"답 없음({decision})")
+
+
+def on_permission(hook):
+    """펫 버튼의 답을 stdout 결정으로 돌려준다. 답이 없으면 아무것도 출력하지 않고 끝나 평소처럼 터미널에서 묻는다"""
+    if not settings().get("claude_permission") or not pet_running():
+        return
+    name = hook.get("tool_name", "")
+    if name == "AskUserQuestion":
+        on_ask(hook)
+        return
+    summary = tool_summary(name, hook.get("tool_input"))
+    rid = f"claude-perm-{safe(hook.get('session_id'))}-{int(time.time() * 1000) % 10**9}"
+    write_req(rid, {
+        **base(hook, ORCA_CTX),
+        "headline": f"허용할까요? · {name}",
+        "line": "",
+        "detail": plain(summary, 200),
+        "full": summary[:4000],
+        "options": ["허용", "거부"], "ids": ["allow", "deny"], "primary": 0,
+        "await": True,
+        "expires_at": time.time() + PERMISSION_WAIT_SEC,
+    })
+    decision = wait_decision(rid)
     if decision in ("allow", "deny"):
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-                                                  "decision": {"behavior": decision}}}))
+        permission_output({"behavior": decision})
     # 그 밖(닫기·열기·시간 초과)은 결정 없이 끝 → 터미널에서 평소처럼 묻는다
 
 
