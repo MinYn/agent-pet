@@ -355,13 +355,58 @@ def ask_answers(tool_input, picked):
     return answers
 
 
-def wait_decision(rid):
-    """펫 말풍선 답을 기다린다 — 닫기·시간 초과면 None. 요청·응답 파일은 정리한다"""
+def find_tool_use(path, name, tool_input):
+    """대화 기록 끝에서 이 권한 요청의 도구 호출 id 와 그때 파일 길이를 찾는다 — 못 찾으면 (None, 길이)"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 2_000_000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError):
+        return None, 0
+    for line in reversed(lines):
+        if f'"name":"{name}"' not in line.replace(" ", ""):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        for c in reversed((d.get("message") or {}).get("content") or []):
+            if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == name and c.get("input") == tool_input:
+                return c.get("id"), size
+    return None, size
+
+
+def answered_elsewhere(path, tool_use_id, offset):
+    """기다리는 사이 터미널에서 답해 그 도구 결과가 대화 기록에 붙었는지"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            return f'"tool_use_id":"{tool_use_id}"' in f.read().decode("utf-8", "replace").replace(" ", "")
+    except (OSError, TypeError):
+        return False
+
+
+def wait_decision(rid, hook=None):
+    """펫 말풍선 답을 기다린다 — 닫기·시간 초과면 None. 요청·응답 파일은 정리한다.
+    터미널에서 먼저 답하면(그 도구 결과가 대화 기록에 붙으면) 바로 그만 기다리고 말풍선을 내린다"""
     resp = os.path.join(RESP, rid + ".json")
     deadline = time.time() + PERMISSION_WAIT_SEC
     decision = None
+    path = (hook or {}).get("transcript_path")
+    tuid, offset = find_tool_use(path, hook.get("tool_name", ""), hook.get("tool_input")) if hook and path else (None, 0)
+    ppid, tick = os.getppid(), 0
     try:
         while time.time() < deadline:
+            tick += 1
+            if tick % 3 == 0:   # 약 1초마다
+                if tuid and answered_elsewhere(path, tuid, offset):
+                    hook_log("wait", hook, "터미널에서 먼저 답함 → 말풍선 내림")
+                    notice_log(f"지움 {rid} 터미널에서 먼저 답함")
+                    break
+                if os.getppid() != ppid:   # Claude Code 가 끝남
+                    break
             if os.path.exists(resp):
                 try:
                     with open(resp, encoding="utf-8") as f:
@@ -401,7 +446,7 @@ def on_ask(hook):
         "await": True,
         "expires_at": time.time() + PERMISSION_WAIT_SEC,
     })
-    decision = wait_decision(rid)
+    decision = wait_decision(rid, hook)
     if not (decision or "").startswith("multi:"):
         hook_log("ask", hook, f"답 없음({decision})")
         return   # 답이 없으면 결정 없이 끝 → 터미널에서 평소처럼 묻는다
@@ -434,7 +479,7 @@ def on_permission(hook):
         "await": True,
         "expires_at": time.time() + PERMISSION_WAIT_SEC,
     })
-    decision = wait_decision(rid)
+    decision = wait_decision(rid, hook)
     if decision in ("allow", "deny"):
         permission_output({"behavior": decision})
     # 그 밖(닫기·열기·시간 초과)은 결정 없이 끝 → 터미널에서 평소처럼 묻는다
