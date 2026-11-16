@@ -588,6 +588,7 @@ final class BubbleView: NSVisualEffectView {
         top.distribution = .fill
         chip.setContentHuggingPriority(.defaultLow, for: .horizontal)
         top.widthAnchor.constraint(equalToConstant: inner).isActive = true
+        top.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true   // 짧은 말풍선도 잡아 끌 손잡이가 넉넉하게
         stack.addArrangedSubview(top)
 
         if !r.headline.isEmpty { addFit(label(r.headline, size: 14, weight: .semibold, lines: 4), inner) }
@@ -671,6 +672,7 @@ final class BubbleView: NSVisualEffectView {
         }
         let row = NSStackView(views: bottom)
         row.widthAnchor.constraint(equalToConstant: inner).isActive = true
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true   // 버튼 사이 빈 곳도 잡아 끌 수 있다
         stack.addArrangedSubview(row)
     }
 
