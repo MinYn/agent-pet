@@ -1104,11 +1104,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? (lines.suffix(500).joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
     }
 
-    func motionLog(_ msg: String) {   // 창 상호작용 문제 추적용
+    func motionLog(_ msg: String) {   // 창 상호작용 문제 추적용 — 200KB 를 넘으면 최근 1000줄만 남긴다
         let line = "\(Date()) \(msg)\n"
         let path = petDir + "/motion.log"
         if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
         else { fm.createFile(atPath: path, contents: line.data(using: .utf8)) }
+        if let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int, size > 200_000,
+           let text = try? String(contentsOfFile: path, encoding: .utf8) {
+            let keep = text.split(separator: "\n", omittingEmptySubsequences: true).suffix(1000).joined(separator: "\n") + "\n"
+            try? keep.write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 
     /// 끌어다 놓은 곳 — 창 윗변 근처면 올라앉고, 공중이면 떨어지고, 바닥이면 거기가 집
