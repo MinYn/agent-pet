@@ -872,6 +872,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastOrigin = NSPoint.zero
     var lastPlaceKind = ""
     var summonTarget: CGFloat?   // 알림이 오면 달려갈 x
+    var perchFrame: (id: Int, frame: NSRect)?   // 앉아 있는 창의 직전 위치·크기 — 옮김과 크기 바꿈을 가려낸다
     var shakenOff: (id: Int, until: Date)?   // 옮겨진 창 — 잠시 그 창에는 다시 내려앉지 않는다
     /// 모니터 옮겨 가기 — 사라지는 중(그다음 targetScreen 위쪽에서 나타나 떨어진다)
     var transit: (start: Date, screen: NSScreen, x: CGFloat, runTo: CGFloat?)?
@@ -1017,6 +1018,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 motionLog("창 사라짐 id=\(id) 목록=\(windows.count)")
                 place = .falling(vy: 0, vx: 0); return "walk2"
             }
+            // 창 크기만 바뀜(가장자리를 끌어 늘이거나 줄임) — 떨어지지 않고 같은 자리에서 윗변을 따라간다
+            if id != WindowWorld.dockId, let pf = perchFrame, pf.id == id, pf.frame.size != w.frame.size {
+                let nx = min(max(f.minX, w.frame.minX), w.frame.maxX - f.width)
+                perchFrame = (id, w.frame)
+                place = .perched(id: id, offset: nx - w.frame.minX)
+                motionLog("창 크기 바뀜 id=\(id) \(pf.frame.size) → \(w.frame.size) → 그대로 앉아 있음")
+                petPanel.setFrameOrigin(NSPoint(x: nx, y: w.top))
+                return nil
+            }
+            perchFrame = (id, w.frame)
             let x = w.frame.minX + offset
             let cx = x + f.width / 2
             if cx < w.frame.minX || cx > w.frame.maxX || !WindowWorld.topVisible(w, x: cx, in: windows) {
