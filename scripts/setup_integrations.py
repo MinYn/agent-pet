@@ -41,6 +41,7 @@ def claude_install(src):
     add = {
         "Stop": [{"hooks": [{"type": "command", "command": hook + " stop", "async": True, "timeout": 10}]}],
         "Notification": [{"hooks": [{"type": "command", "command": hook + " notify", "async": True, "timeout": 10}]}],
+        "StopFailure": [{"matcher": "rate_limit", "hooks": [{"type": "command", "command": hook + " limit", "async": True, "timeout": 10}]}],
         "UserPromptSubmit": [{"hooks": [{"type": "command", "command": hook + " clear", "async": True, "timeout": 10}]}],
         "PermissionRequest": [{"matcher": "*", "hooks": [{"type": "command", "command": hook + " permission", "timeout": 120}]}],
     }
@@ -156,7 +157,9 @@ def status(src):
     text = open(CLAUDE_SETTINGS, encoding="utf-8").read() if os.path.exists(CLAUDE_SETTINGS) else ""
     if MARK not in text:
         return "none"
-    return "ok" if f"{src}/{MARK}" in text else "stale"
+    if f"{src}/{MARK}" not in text:
+        return "stale"
+    return "ok" if f"{src}/{MARK} limit" in text else "stale"   # 새로 생긴 훅(사용량 한도)이 없으면 다시 맞춘다
 
 
 def main():

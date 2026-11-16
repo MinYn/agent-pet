@@ -46,7 +46,7 @@ AgentPet 은 아직 Apple 개발자 서명·공증이 없어서, 처음 열면 �
 
 처음 실행할 때나 펫 메뉴 **연동 설정…** 에서 연결하면:
 
-- `~/.claude/settings.json` 에 펫 훅 4개 추가 (기존 훅은 그대로)
+- `~/.claude/settings.json` 에 펫 훅 5개 추가 (기존 훅은 그대로)
 - `~/.codex/config.toml` 의 `notify` 를 감싸기 (원래 notify 명령도 계속 불림, Codex 를 쓸 때만)
 - Claude Code 스킬 `pet-character` 설치 (`~/.claude/skills/`)
 - 고치는 설정 파일은 처음 한 번 `*.bak-agentpet` 으로 백업

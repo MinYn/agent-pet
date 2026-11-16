@@ -85,7 +85,7 @@ enum Integration {
                        detail: "Claude Code 훅 · Codex notify · 캐릭터 스킬을 설정해요. 고치는 파일은 백업해 둬요. 「자세히 보기」로 내용을 볼 수 있어요.",
                        fullMarkdown: """
                        ### 연결하면 이렇게 설정해요
-                       - `~/.claude/settings.json` — 펫 훅 4개 추가 (기존 훅은 그대로)
+                       - `~/.claude/settings.json` — 펫 훅 5개 추가 (기존 훅은 그대로)
                        - `~/.codex/config.toml` — `notify` 감싸기 (원래 명령도 계속 불림)
                        - Claude Code 스킬 `pet-character` 설치
                        - 고치는 파일은 처음 한 번 `*.bak-agentpet` 으로 백업

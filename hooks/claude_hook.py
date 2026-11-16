@@ -3,6 +3,7 @@
 
   claude_hook.py stop        Stop 훅: 「작업 완료!」 (last_assistant_message)
   claude_hook.py notify      Notification 훅: 입력 대기·승인 대기 알림
+  claude_hook.py limit       StopFailure 훅(rate_limit): 사용량 한도로 멈춘 세션을 초기화 시각에 다시 알림
   claude_hook.py clear       UserPromptSubmit 훅: 터미널에서 다시 입력하면 그 세션 알림을 내림
   claude_hook.py permission  PermissionRequest 훅(동기): 펫 버튼으로 허용/거부 — 설정 「claude_permission」이 켜져 있을 때만
 
@@ -202,6 +203,94 @@ def on_notify(hook):
         orca_followup(f"claude-{sid}")
 
 
+MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+# 한도 메시지의 초기화 시각 — 「… · resets 3pm (Asia/Seoul)」「resets 3:30pm」「resets Nov 20, 3pm」「resets Jan 2, 2027, 9am」
+RESET_RE = re.compile(r"resets\s+(?:(?P<mon>[A-Za-z]{3})\s+(?P<day>\d{1,2}),\s+(?:(?P<year>\d{4}),\s+)?)?"
+                      r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)(?:\s*\((?P<tz>[^)]+)\))?", re.I)
+
+
+def reset_time(text):
+    """한도 메시지에서 초기화 시각(epoch 초)을 읽는다 — 못 읽으면 None"""
+    from datetime import datetime, timedelta
+    m = RESET_RE.search(text or "")
+    if not m:
+        return None
+    tz = None
+    if m["tz"]:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(m["tz"].strip())
+        except Exception:
+            tz = None
+    now = datetime.now(tz) if tz else datetime.now().astimezone()
+    hour = int(m["h"]) % 12 + (12 if m["ap"].lower() == "pm" else 0)
+    minute = int(m["m"] or 0)
+    try:
+        if m["mon"]:
+            month = MONTHS.index(m["mon"].lower()) + 1
+            year = int(m["year"]) if m["year"] else now.year
+            t = now.replace(year=year, month=month, day=int(m["day"]), hour=hour, minute=minute, second=0, microsecond=0)
+            if not m["year"] and t < now - timedelta(days=1):   # 연말에 걸친 날짜
+                t = t.replace(year=year + 1)
+        else:
+            t = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if t <= now:   # 시각만 있으면 다음에 오는 그 시각
+                t += timedelta(days=1)
+    except ValueError:
+        return None
+    return t.timestamp()
+
+
+def last_prompt(path):
+    """대화 기록에서 마지막으로 입력한 요청 — 어떤 작업이 멈췄는지 보여 주려고.
+    Claude Code 가 턴마다 남기는 {"type": "last-prompt"} 줄을 끝에서부터 찾는다 (긴 도구 출력이 많아 넉넉히 읽음)"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4_000_000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError):
+        return ""
+    for line in reversed(lines):
+        if '"last-prompt"' not in line:
+            continue
+        try:
+            return (json.loads(line).get("lastPrompt") or "").strip()
+        except ValueError:
+            continue
+    return ""
+
+
+def on_limit(hook):
+    """사용량 한도로 멈춘 세션 — 초기화 시각에 펫이 세션마다 다시 알린다 (그 전에는 숨겨 둔다)"""
+    if (hook.get("error") or "") != "rate_limit" or not app_setting("claude", "limit", True):
+        return
+    msg = hook.get("last_assistant_message") or ""
+    at = reset_time(msg)
+    task = plain(last_prompt(hook.get("transcript_path")), 200)
+    rid = f"claude-{safe(hook.get('session_id'))}"
+    if at is None:   # 시각을 못 읽으면 지금 알린다
+        write_req(rid, {**base(hook, ORCA_CTX), "headline": "사용량 한도에 걸렸어요", "line": "",
+                        "detail": plain(msg, 200), "full": plain(msg, 2000), "options": [], "ids": [],
+                        "expires_at": expires_at("claude")})
+        hook_log("limit", hook, "초기화 시각 못 읽음 → 바로 알림")
+        return
+    at += 30   # 초기화 직후 조금 여유를 둔다
+    hhmm = time.strftime("%H:%M", time.localtime(at))
+    sec = app_setting("claude", "expire", DONE_EXPIRE_SEC)
+    write_req(rid, {
+        **base(hook, ORCA_CTX),
+        "headline": "사용량이 다시 채워졌어요",
+        "line": "",
+        "detail": f"멈춘 작업: {task}" if task else "한도로 멈췄던 세션을 이어서 할 수 있어요",
+        "full": "\n\n".join(x for x in (f"멈춘 작업: {task}" if task else "", plain(msg, 1000)) if x),
+        "options": [], "ids": [],
+        "show_at": at,   # 이 시각까지 앱이 숨긴다
+        "expires_at": at + sec if sec else None,
+    })
+    hook_log("limit", hook, f"{hhmm} 초기화 때 다시 알림 예약")
+
+
 def on_clear(hook):
     remove(os.path.join(REQ, f"claude-{safe(hook.get('session_id'))}.json"))
 
@@ -360,7 +449,7 @@ def main():
     hook_log(mode, hook, "처리" if on else "꺼짐(소스 설정)")
     if not on:
         return
-    {"stop": on_stop, "notify": on_notify, "clear": on_clear, "permission": on_permission}.get(mode, lambda h: None)(hook)
+    {"stop": on_stop, "notify": on_notify, "limit": on_limit, "clear": on_clear, "permission": on_permission}.get(mode, lambda h: None)(hook)
 
 
 if __name__ == "__main__":

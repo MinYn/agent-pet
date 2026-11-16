@@ -165,10 +165,13 @@ struct PetRequest {
         link = o["link"] as? String ?? ""
         expiresAt = (o["expires_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
         awaitsResponse = o["await"] as? Bool ?? false
+        showAt = (o["show_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
         let attrs = try? fm.attributesOfItem(atPath: path)
-        created = (attrs?[.creationDate] as? Date) ?? Date()
+        created = showAt ?? (attrs?[.creationDate] as? Date) ?? Date()   // 예약 알림은 보일 때를 기준으로 줄 세운다
     }
 
+    /// 이 시각까지 숨긴다 (사용량 한도가 풀릴 때 다시 알리기 등)
+    let showAt: Date?
     /// 이 시각이 지나면 앱이 내린다 (작업 완료 알림 등)
     let expiresAt: Date?
     /// 훅이 응답 파일을 기다리는 요청(권한 요청 등) — 아니면 앱이 직접 정리한다
@@ -205,6 +208,7 @@ final class SourceRunner {
     }
 
     var multicaScript: String { resourceDir + "/sources/multica_watch.py" }
+    var codexLimitScript: String { resourceDir + "/sources/codex_limit.py" }
 
     func makeCharacter(_ prompt: String, done: @escaping () -> Void) {
         run("make-character-\(Date().timeIntervalSince1970)", ["-I", resourceDir + "/sources/make_character.py", "--prompt", prompt],
@@ -231,6 +235,12 @@ final class SourceRunner {
     func scanMultica() {
         guard Settings.shared.sourceOn("multica") else { return }
         run("multica-scan", ["-I", multicaScript])
+    }
+
+    /// Codex 사용량 한도로 멈춘 세션 찾기 — 초기화 시각에 다시 알리도록 예약한다 (설정은 스크립트가 본다)
+    func scanCodexLimit() {
+        guard Settings.shared.sourceOn("codex") || Settings.shared.sourceOn("orca") else { return }
+        run("codex-limit", ["-I", codexLimitScript])
     }
 
     /// 눌린 답장 보내기 — scan과 겹쳐도 되게 키를 나눈다(스크립트가 락으로 순서를 맞춘다)
@@ -1138,8 +1148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.pollRequests() }
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.animate() }
-        Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.runner.scanMultica() }
+        Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.runner.scanMultica(); self?.runner.scanCodexLimit() }
         runner.scanMultica()
+        runner.scanCodexLimit()
         pollRequests()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {   // 연동 확인(처음이면 묻기) · 업데이트 확인(하루 한 번)
             Integration.checkOnLaunch()
@@ -1191,6 +1202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let id = String(f.dropLast(5))
             if hidden[id] != nil { continue }
             guard let r = PetRequest(id: id, path: "\(reqDir)/\(f)") else { continue }
+            if let at = r.showAt, at > now { continue }   // 예약 알림 — 그 시각이 되면 새 알림처럼 뜬다
             if r.pending && now.timeIntervalSince(r.created) < 30 { continue }   // 추천 답장 준비 중 — 다 되면 한 번에 보인다
             if let exp = r.expiresAt, exp < now {   // 만료된 알림은 내림
                 try? fm.removeItem(atPath: "\(reqDir)/\(f)")
