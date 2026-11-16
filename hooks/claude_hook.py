@@ -5,7 +5,8 @@
   claude_hook.py notify      Notification 훅: 입력 대기·승인 대기 알림
   claude_hook.py limit       StopFailure 훅(rate_limit): 사용량 한도로 멈춘 세션을 초기화 시각에 다시 알림
   claude_hook.py clear       UserPromptSubmit 훅: 터미널에서 다시 입력하면 그 세션 알림을 내림
-  claude_hook.py permission  PermissionRequest 훅(동기): 펫 버튼으로 허용/거부 — 설정 「claude_permission」이 켜져 있을 때만
+  claude_hook.py permission  PermissionRequest 훅(동기): 선택형 질문(AskUserQuestion)은 늘 말풍선으로,
+                             허용/거부 버튼은 설정 「claude_permission」이 켜져 있을 때만
 
 말풍선 하나 = 세션 하나(claude-<세션>.json). 같은 세션의 새 알림은 이전 것을 덮어쓴다.
 권한 요청은 claude-perm-<세션>-<시각>.json 에 "await": true 로 쓰고 responses/ 의 답을 기다린다.
@@ -461,11 +462,14 @@ def on_ask(hook):
 
 def on_permission(hook):
     """펫 버튼의 답을 stdout 결정으로 돌려준다. 답이 없으면 아무것도 출력하지 않고 끝나 평소처럼 터미널에서 묻는다"""
-    if not settings().get("claude_permission") or not pet_running():
+    if not pet_running():
         return
     name = hook.get("tool_name", "")
-    if name == "AskUserQuestion":
-        on_ask(hook)
+    if name == "AskUserQuestion":   # 선택형 질문은 권한 요청 설정(claude_permission)과 상관없이 말풍선으로 묻는다
+        if app_setting("claude", "ask", True):
+            on_ask(hook)
+        return
+    if not settings().get("claude_permission"):
         return
     summary = tool_summary(name, hook.get("tool_input"))
     rid = f"claude-perm-{safe(hook.get('session_id'))}-{int(time.time() * 1000) % 10**9}"
