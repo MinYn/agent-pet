@@ -270,7 +270,7 @@ def on_limit(hook):
     task = plain(last_prompt(hook.get("transcript_path")), 200)
     rid = f"claude-{safe(hook.get('session_id'))}"
     if at is None:   # 시각을 못 읽으면 지금 알린다
-        write_req(rid, {**base(hook, ORCA_CTX), "headline": "사용량 한도에 걸렸어요", "line": "",
+        write_req(rid, {**base(hook, ORCA_CTX), "headline": "사용량 한도에 걸렸어요", "line": "", "limit": True,
                         "detail": plain(msg, 200), "full": plain(msg, 2000), "options": [], "ids": [],
                         "expires_at": expires_at("claude")})
         hook_log("limit", hook, "초기화 시각 못 읽음 → 바로 알림")
@@ -286,6 +286,7 @@ def on_limit(hook):
         "full": "\n\n".join(x for x in (f"멈춘 작업: {task}" if task else "", plain(msg, 1000)) if x),
         "options": [], "ids": [],
         "show_at": at,   # 이 시각까지 앱이 숨긴다
+        "limit": True,    # 소스 설정과 상관없이 보인다
         "expires_at": at + sec if sec else None,
     })
     hook_log("limit", hook, f"{hhmm} 초기화 때 다시 알림 예약")
@@ -459,6 +460,10 @@ def main():
         hook_log(mode, hook, "말풍선 내림")
         return
     ORCA_CTX = orca_context()
+    if mode == "limit":   # 사용량 한도 알림은 소스 설정(Claude·Orca 알림 끔)과 상관없이 받는다
+        hook_log(mode, hook, "처리(한도 알림은 소스 설정과 무관)")
+        on_limit(hook)
+        return
     on = source_on(ORCA_CTX)
     hook_log(mode, hook, "처리" if on else "꺼짐(소스 설정)")
     if not on:

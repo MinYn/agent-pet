@@ -165,11 +165,14 @@ struct PetRequest {
         link = o["link"] as? String ?? ""
         expiresAt = (o["expires_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
         awaitsResponse = o["await"] as? Bool ?? false
+        isLimit = o["limit"] as? Bool ?? false
         showAt = (o["show_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
         let attrs = try? fm.attributesOfItem(atPath: path)
         created = showAt ?? (attrs?[.creationDate] as? Date) ?? Date()   // 예약 알림은 보일 때를 기준으로 줄 세운다
     }
 
+    /// 사용량 한도 알림 — 소스 설정과 상관없이 보인다
+    let isLimit: Bool
     /// 이 시각까지 숨긴다 (사용량 한도가 풀릴 때 다시 알리기 등)
     let showAt: Date?
     /// 이 시각이 지나면 앱이 내린다 (작업 완료 알림 등)
@@ -237,9 +240,8 @@ final class SourceRunner {
         run("multica-scan", ["-I", multicaScript])
     }
 
-    /// Codex 사용량 한도로 멈춘 세션 찾기 — 초기화 시각에 다시 알리도록 예약한다 (설정은 스크립트가 본다)
+    /// Codex 사용량 한도로 멈춘 세션 찾기 — 초기화 시각에 다시 알리도록 예약한다 (소스 설정과 상관없이)
     func scanCodexLimit() {
-        guard Settings.shared.sourceOn("codex") || Settings.shared.sourceOn("orca") else { return }
         run("codex-limit", ["-I", codexLimitScript])
     }
 
@@ -1223,7 +1225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try? fm.removeItem(atPath: "\(reqDir)/\(f)")
                 continue
             }
-            if r.source == "demo" || r.source == "pet" || Settings.shared.sourceOn(r.source) {   // Orca 세션은 Orca 설정만 따른다
+            if r.source == "demo" || r.source == "pet" || r.isLimit || Settings.shared.sourceOn(r.source) {   // Orca 세션은 Orca 설정만 따른다
                 list.append(r)
             }
         }

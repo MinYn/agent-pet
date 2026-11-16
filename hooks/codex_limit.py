@@ -5,7 +5,7 @@ Codex notify 는 정상으로 끝난 턴(agent-turn-complete)에만 불려서, �
 그래서 최근 세션 기록(~/.codex/sessions/**/rollout-*.jsonl)을 읽어
 마지막 턴이 usage_limit_exceeded 로 끝난 세션을 찾고, 기록에 있는 초기화 시각(rate_limits.*.resets_at)에
 펫이 그 세션 말풍선을 띄우도록 codex-<thread>.json 에 "show_at" 을 써 둔다.
-한 턴은 한 번만 알린다 (codex_limit_seen.json).
+한 턴은 한 번만 알린다 (codex_limit_seen.json). 소스 설정(Codex·Orca 알림 끔)과 상관없이 알린다.
 """
 import glob
 import json
@@ -129,7 +129,6 @@ def limited_turn(events):
 
 def main():
     now = time.time()
-    src = settings().get("sources", {})
     seen = load_json(SEEN, {})
     seen = {k: v for k, v in seen.items() if now - v < 7 * 86400}
     changed = False
@@ -144,8 +143,6 @@ def main():
         seen[turn] = now
         changed = True
         orca = meta.get("originator") == "orca_desktop"   # Orca 채팅 모드에서 띄운 Codex
-        if not (src.get("orca", True) if orca else src.get("codex", True)):
-            continue
         if at and at + 30 < now:   # 이미 풀린 지 오래 — 다시 알릴 필요 없음
             continue
         cwd = meta.get("cwd") or ""
@@ -159,6 +156,7 @@ def main():
             "options": [], "ids": [],
             "openLabel": "Orca에서 보기" if orca else "폴더 열기",
             "link": f"orca-worktree:{cwd}" if orca else (f"file://{cwd}" if cwd else ""),
+            "limit": True,   # 소스 설정(Codex·Orca 알림 끔)과 상관없이 보인다
         }
         if at:   # 초기화 시각에 다시 알린다 — 그 전에는 펫이 숨겨 둔다
             show = at + 30
