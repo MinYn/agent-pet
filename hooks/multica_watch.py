@@ -61,6 +61,7 @@ FAILED = {"failed", "error", "timed_out"}   # 사람이 취소한 실행(cancell
 QUEUED = {"backlog", "todo"}                # 앞 단계를 기다리는 하위 이슈
 QA_STATUS = "qa"                            # 「QA 중」 — QA 요청·결과를 기다리는 중
 LEADER = "SDD 리더"                          # 스쿼드 설치가 만드는 리더 이름 앞부분 — 리더는 최상위 이슈만 본다
+DIRECT_RECENT_MIN = 3 * 24 * 60   # 내 에이전트에 직접 맡겨진 사람 대기 이슈는 이 안에 활동이 있을 때만 알린다
 HUMAN_WAIT = {"decision", "pr-approval", "qa-human", "deploy"}   # 사람을 기다리는 waiting_for (ci·review는 에이전트 대기)
 STUCK_MIN = 5   # 기본 — 펫 메뉴 「알림 범위 › Multica › 멈춤 알림 기준」(apps.multica.stuck_min) 로 바꾼다
 WAIT_LABEL = {"decision": "결정이 필요해요", "pr-approval": "PR 승인을 기다려요", "qa-human": "QA 확인이 필요해요", "deploy": "배포를 기다려요"}
@@ -201,6 +202,20 @@ def my_issues(st):
             if not (isinstance(d, dict) and d.get("has_more")) or not page:
                 break
             off += len(page)
+    # 내 에이전트에게 직접 맡겨진 이슈(스쿼드 멤버가 이어받은 하위 이슈 등) — 스쿼드·리더 범위 밖이라 위에서 빠진다.
+    # 사람의 결정·승인을 기다리는 것만, 오래 묵은 것이 한꺼번에 뜨지 않게 최근 활동이 있는 것만 더한다
+    owners, off = set(st.get("owners", [])), 0
+    while True:
+        d = cli("issue", "list", "--status", ",".join(sorted(TURN)), "--limit", "100", "--offset", str(off), "--fields", FIELDS)
+        page = rows(d, "issues")
+        for i in page:
+            wait = ((i.get("metadata") or {}).get("waiting_for") or "").split(":")[0]
+            if (i["id"] not in found and i.get("assignee_id") in owners and wait in HUMAN_WAIT
+                    and minutes_since(i.get("last_activity_at")) <= DIRECT_RECENT_MIN):
+                found[i["id"]] = i
+        if not (isinstance(d, dict) and d.get("has_more")) or not page:
+            break
+        off += len(page)
     return list(found.values())
 
 
