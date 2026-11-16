@@ -447,7 +447,7 @@ final class KeyablePanel: NSPanel {
               var v = cv.hitTest(cv.convert(e.locationInWindow, from: nil)) else { return false }
         while true {
             if v is NSButton || v is NSTextView || v is NSScroller || v is NSScrollView { return false }
-            if v is NSTextField { return false }   // 글자 위를 끌면 글자 선택
+            if let tf = v as? NSTextField, tf.isSelectable || tf.isEditable { return false }   // 선택되는 글자 위를 끌면 글자 선택
             guard let up = v.superview, v !== cv else { return true }
             v = up
         }
@@ -565,6 +565,7 @@ final class BubbleView: NSVisualEffectView {
         // 맨 위 줄: 칩 + ✕
         let chip = label(r.tag, size: 11, weight: .medium, color: .secondaryLabelColor, lines: 1)
         chip.lineBreakMode = .byTruncatingTail
+        chip.isSelectable = false   // 첫 줄은 선택되지 않고 잡아 끄는 손잡이
         let close = ActionButton("✕", small: true) { [weak self] in self?.onDismiss?(r) }
         close.isBordered = false
         close.toolTip = "이 알림 닫기 (상태가 바뀔 때까지 다시 안 띄움)"
@@ -574,8 +575,8 @@ final class BubbleView: NSVisualEffectView {
         top.widthAnchor.constraint(equalToConstant: inner).isActive = true
         stack.addArrangedSubview(top)
 
-        if !r.headline.isEmpty { add(label(r.headline, size: 14, weight: .semibold, lines: 4), inner) }
-        if !r.line.isEmpty { add(label(r.line, size: 12, color: .secondaryLabelColor, lines: 3), inner) }
+        if !r.headline.isEmpty { addFit(label(r.headline, size: 14, weight: .semibold, lines: 4), inner) }
+        if !r.line.isEmpty { addFit(label(r.line, size: 12, color: .secondaryLabelColor, lines: 3), inner) }
 
         // 본문 — 펼치면 전문을 스크롤로
         let open = expanded.contains(r.id)
@@ -612,7 +613,7 @@ final class BubbleView: NSVisualEffectView {
                 sv.heightAnchor.constraint(equalToConstant: min(used + 4, 320)).isActive = true
                 add(sv, inner)
             } else {
-                add(label(body, size: 12, lines: 5), inner)
+                addFit(label(body, size: 12, lines: 5), inner)
             }
         }
         if r.expandable {
@@ -759,6 +760,14 @@ final class BubbleView: NSVisualEffectView {
     private func jumpToFirstEmpty(_ r: PetRequest) {
         guard let st = qState[r.id] else { return }
         if let i = r.questions.firstIndex(where: { (st.answers[$0.id] ?? "").isEmpty }) { qState[r.id]?.at = i }
+    }
+
+    /// 글자 폭만큼만 차지하는 글 줄 (최대 width 에서 줄바꿈) — 오른쪽 빈 곳은 잡아 끌 수 있다
+    private func addFit(_ f: NSTextField, _ width: CGFloat) {
+        f.preferredMaxLayoutWidth = width
+        f.setContentHuggingPriority(.required, for: .horizontal)
+        stack.addArrangedSubview(f)
+        f.widthAnchor.constraint(lessThanOrEqualToConstant: width).isActive = true
     }
 
     private func add(_ v: NSView, _ width: CGFloat) {
