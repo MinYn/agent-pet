@@ -30,6 +30,18 @@ enum WindowWorld {
         return out
     }
 
+    /// 창 하나의 지금 영역 — 앉아 있는 창을 매 프레임 따라가려고 (전체 목록보다 훨씬 가볍다). 창이 없으면 nil
+    static func frame(of id: Int) -> NSRect? {
+        // 창 번호는 숫자 객체가 아니라 포인터 값 배열로 넘겨야 한다 — [CGWindowID] as CFArray 는 빈 결과가 나온다
+        var values: [UnsafeRawPointer?] = [UnsafeRawPointer(bitPattern: UInt(id))]
+        guard let ids = CFArrayCreate(nil, &values, 1, nil),
+              let list = CGWindowListCreateDescriptionFromArray(ids) as? [[String: Any]],
+              let w = list.first, let b = w[kCGWindowBounds as String] as? [String: Any],
+              let r = CGRect(dictionaryRepresentation: b as CFDictionary),
+              let mainH = NSScreen.screens.first?.frame.height else { return nil }
+        return NSRect(x: r.minX, y: mainH - r.maxY, width: r.width, height: r.height)
+    }
+
     /// x 지점에서 이 창 윗변이 다른(앞쪽) 창에 가려지지 않았는지
     static func topVisible(_ w: WinSurface, x: CGFloat, in list: [WinSurface]) -> Bool {
         let p = NSPoint(x: x, y: w.frame.maxY + 6)
