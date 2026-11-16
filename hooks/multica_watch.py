@@ -621,11 +621,20 @@ def scan():
     # 더는 해당 안 되는 요청은 말풍선에서 내림
     for f in os.listdir(REQ) if os.path.isdir(REQ) else []:
         rid = f[:-5]
-        if f.endswith(".json") and not rid.startswith("demo") and rid not in keep:
+        if f.endswith(".json") and not rid.startswith("demo") and rid not in keep and is_multica_req(f):
             remove(os.path.join(REQ, f))
             st.get("reqs", {}).pop(rid, None)
             notified.pop(rid, None)
     save_state(st)
+
+
+def is_multica_req(name):
+    """Multica 가 쓴 알림인지 — 정리는 자기 알림만 (Claude·Codex·Orca·펫 안내는 건드리지 않는다)"""
+    try:
+        with open(os.path.join(REQ, name), encoding="utf-8") as fh:
+            return json.load(fh).get("source") == "multica"
+    except (OSError, ValueError):
+        return False
 
 
 def notice(rid, headline, detail):
