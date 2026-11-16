@@ -107,6 +107,8 @@ struct PetQuestion {
     let id: String
     let title: String
     let free: Bool                                       // 선택지 없이 직접 적는 질문
+    var multi = false                                    // 여러 개 고르기 — 답은 번호들 "1,3"
+    var other = false                                    // 선택지가 있어도 직접 적을 수 있다 — 답은 "text:<글>"
     let options: [(no: String, label: String, recommended: Bool)]
     var recommended: String? { options.first { $0.recommended }?.no }
 }
@@ -148,6 +150,7 @@ struct PetRequest {
         pending = o["pending"] as? Bool ?? false
         questions = (o["questions"] as? [[String: Any]] ?? []).map { q in
             PetQuestion(id: q["id"] as? String ?? "", title: q["title"] as? String ?? "", free: q["free"] as? Bool ?? false,
+                        multi: q["multi"] as? Bool ?? false, other: q["other"] as? Bool ?? false,
                         options: (q["options"] as? [[String: Any]] ?? []).map {
                             (no: $0["no"] as? String ?? "", label: $0["label"] as? String ?? "", recommended: $0["recommended"] as? Bool ?? false)
                         })
@@ -709,16 +712,43 @@ final class BubbleView: NSVisualEffectView {
             let row = NSStackView(views: [field, ok])
             field.setContentHuggingPriority(.defaultLow, for: .horizontal)
             add(row, inner)
-        } else {      // 선택지 — 고른 답 ✓, 추천 ⭐
+        } else {      // 선택지 — 고른 답 ✓, 추천 ⭐ (여러 개 고르기면 누를 때마다 넣고 빼기)
+            let cur = st.answers[q.id] ?? ""
+            let pickedSet = Set(cur.hasPrefix("text:") ? [] : cur.split(separator: ",").map(String.init))
+            if q.multi { add(label("여러 개 고를 수 있어요 — 다 고른 뒤 「다음 질문」이나 「답 보내기」", size: 11, color: .secondaryLabelColor, lines: 2), inner) }
             for o in q.options {
-                let picked = st.answers[q.id] == o.no
+                let picked = pickedSet.contains(o.no)
                 let title = (picked ? "✓ " : "") + (o.recommended ? "⭐ " : "") + "\(o.no). \(o.label)"
                 let b = ActionButton(title, primary: picked) { [weak self] in
-                    self?.qState[r.id]?.answers[q.id] = o.no
-                    self?.advance(r)
+                    guard let self else { return }
+                    if q.multi {   // 넣고 빼기 — 선택지 순서대로 "1,3"
+                        var set = pickedSet
+                        if set.contains(o.no) { set.remove(o.no) } else { set.insert(o.no) }
+                        let v = q.options.map(\.no).filter { set.contains($0) }.joined(separator: ",")
+                        self.qState[r.id]?.answers[q.id] = v.isEmpty ? nil : v
+                    } else {
+                        self.qState[r.id]?.answers[q.id] = o.no
+                        self.advance(r)
+                    }
                     redraw()
                 }
                 add(b, inner)
+            }
+            if q.other {   // 직접 입력 — 고른 선택지 대신 이 글을 답으로
+                let typed = cur.hasPrefix("text:") ? String(cur.dropFirst(5)) : ""
+                let field = NSTextField(string: typed)
+                field.placeholderString = "직접 입력"
+                field.font = BubbleFont.font(12)
+                let ok = ActionButton(typed.isEmpty ? "확인" : "✓ 확인", primary: !typed.isEmpty, small: true) { [weak self] in
+                    guard let self else { return }
+                    let v = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !v.isEmpty { self.qState[r.id]?.answers[q.id] = "text:" + v; self.advance(r) }
+                    else if typed.isEmpty == false { self.qState[r.id]?.answers[q.id] = nil }
+                    redraw()
+                }
+                let row = NSStackView(views: [field, ok])
+                field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                add(row, inner)
             }
         }
 

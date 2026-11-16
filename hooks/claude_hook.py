@@ -319,7 +319,9 @@ def ask_questions(tool_input):
             qid = f"{qid}{i + 1}"
         seen.add(qid)
         opts = [{"no": str(k + 1), "label": o.get("label", "")} for k, o in enumerate(q.get("options") or [])]
-        out.append({"id": qid, "title": q.get("question", ""), "free": not opts, "options": opts})
+        out.append({"id": qid, "title": q.get("question", ""), "free": not opts, "options": opts,
+                    "multi": bool(q.get("multiSelect")),   # 여러 개 고르기
+                    "other": bool(opts)})                  # 선택지가 있어도 직접 적을 수 있다 (터미널의 Other 와 같음)
     return out
 
 
@@ -336,13 +338,19 @@ def ask_markdown(tool_input):
 
 
 def ask_answers(tool_input, picked):
-    """말풍선 답 {질문id: 번호 또는 직접 적은 글} → AskUserQuestion answers {질문 원문: 선택지 이름}"""
+    """말풍선 답 {질문id: 번호 · 번호들("1,3") · "text:직접 적은 글"} → AskUserQuestion answers {질문 원문: 선택지 이름}"""
     answers = {}
     for spec, q in zip(ask_questions(tool_input), (tool_input or {}).get("questions") or []):
         v = (picked.get(spec["id"]) or "").strip()
         if not v:
             return None
-        label = next((o["label"] for o in spec["options"] if o["no"] == v), v)
+        if v.startswith("text:"):   # 선택지 대신 직접 적은 답
+            label = v[len("text:"):].strip()
+        else:                       # 번호 하나 또는 여러 개("1,3") → 선택지 이름 (여러 개는 「, 」로 잇는다 — Claude Code 와 같은 형식)
+            names = {o["no"]: o["label"] for o in spec["options"]}
+            label = ", ".join(names.get(n.strip(), n.strip()) for n in v.split(",") if n.strip())
+        if not label:
+            return None
         answers[q.get("question", "")] = label
     return answers
 
