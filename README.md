@@ -2,12 +2,14 @@
 
 화면 위를 돌아다니는 데스크톱 펫이 AI 도구들의 알림을 말풍선으로 알려 주는 macOS 앱입니다.
 
-- **Multica** — 내 SDD 리더·스쿼드 이슈 중 사람 차례·결정 대기 등을 알림. 빠른 답장 버튼(Claude 추천 답 포함)으로 바로 댓글을 달 수 있어요.
-- **Claude Code** — 작업 완료·입력 대기·승인 대기. 권한 요청을 펫에서 허용/거부(실험).
+- **Multica** — 내 SDD 리더·스쿼드 이슈, 내 에이전트에 직접 맡겨진 이슈 중 사람 차례·결정 대기 등을 알림. 빠른 답장 버튼(Claude 추천 답 포함)이나 질문별 선택으로 바로 댓글을 달 수 있어요. 같은 질문에 같은 답은 두 번 보내지 않아요.
+- **Claude Code** — 작업 완료·입력 대기·승인 대기. 선택형 질문(AskUserQuestion)은 말풍선에서 바로 답해요. 권한 요청을 펫에서 허용/거부(실험).
 - **Codex** — 작업 완료.
 - **Orca** — Orca에서 실행한 Claude Code·Codex 세션. 알림을 누르면 그 Orca 탭으로 이동.
+- **사용량 한도 재알림** — Claude Code·Codex 세션이 사용량 한도에 걸려 멈추면, 한도가 풀리는 시각에 세션마다 「사용량이 다시 채워졌어요 · 멈춘 작업: …」으로 다시 알려 줘요. 앱별 알림을 꺼 둬도 와요.
+- **알림함** — 닫거나 답한 지난 알림을 메일함처럼 모아 보고, 다시 띄울 수 있어요.
 
-펫은 창·Dock 위에 올라가 놀고, 졸리면 구석에서 자고, 알림이 오면 보고 있는 모니터로 점프해 와요.
+펫은 창·Dock 위에 올라가 놀고, 졸리면 구석에서 자고, 알림이 오면 보고 있는 모니터로 점프해 와요. 앉은 창의 크기를 바꾸면 따라가고, 창을 옮기면 떨어져요.
 
 ## 설치
 
@@ -46,7 +48,7 @@ AgentPet 은 아직 Apple 개발자 서명·공증이 없어서, 처음 열면 �
 
 처음 실행할 때나 펫 메뉴 **연동 설정…** 에서 연결하면:
 
-- `~/.claude/settings.json` 에 펫 훅 5개 추가 (기존 훅은 그대로)
+- `~/.claude/settings.json` 에 펫 훅 5개 추가 (기존 훅은 그대로) — 작업 완료(Stop)·알림(Notification)·다시 입력(UserPromptSubmit)·선택형 질문과 권한 요청(PermissionRequest)·사용량 한도(StopFailure)
 - `~/.codex/config.toml` 의 `notify` 를 감싸기 (원래 notify 명령도 계속 불림, Codex 를 쓸 때만)
 - Claude Code 스킬 `pet-character` 설치 (`~/.claude/skills/`)
 - 고치는 설정 파일은 처음 한 번 `*.bak-agentpet` 으로 백업
@@ -71,17 +73,49 @@ scripts/uninstall.sh        # 앱과 연동 설정 제거 (--purge 면 ~/.agent-
 scripts/package.sh          # dist/AgentPet.dmg · AgentPet.zip 만들기
 ```
 
-`v*` 태그를 올리면 GitHub Actions 가 dmg·zip 을 만들어 Release 에 첨부해요 (`.github/workflows/release.yml`).
+`v*` 태그를 올리면 GitHub Actions 가 dmg·zip 을 만들어 Release 에 첨부해요 (`.github/workflows/release.yml`). 릴리스 순서와 노트 작성은 [docs/RELEASE.md](docs/RELEASE.md) (`scripts/release_finish.sh`).
 
 ## 쓰는 법
 
 펫을 **클릭**하면 말풍선을 열고 닫고, **우클릭**하면 메뉴가 열려요.
 
-- **알림 범위** — 앱별 알림 켜기/끄기와 앱별 설정 (Multica 알릴 이슈, Claude 알릴 때, 작업 완료 알림 내리는 시간 등)
+- **알림 범위** — 앱별 알림 켜기/끄기와 앱별 설정 (Multica 알릴 이슈, Claude 알릴 때, 작업 완료 알림 내리는 시간 등). 「닫은 알림 다시 보기 (알림함)…」
+- **알림함 — 지난 알림 보기…** — 아래 「알림함」
 - **캐릭터** — 썸네일에서 고르기, 「AI로 캐릭터 만들기…」, 캐릭터 크기
 - **창·Dock 위에 올라가 놀기**, **모니터**(마우스 모니터 따라다니기), **말풍선 테마·글꼴**
 
-말풍선의 「자세히 보기」로 전문을 펼쳐요(마크다운 표시).
+### 말풍선
+
+- 「자세히 보기」로 전문을 펼쳐요(마크다운 표시).
+- 첫 줄(앱·세션 이름)이나 빈 곳을 끌면 펫이 함께 옮겨지고, 하던 점프도 멈춰요. 둘째 줄부터는 끌면 글자가 선택돼요.
+- 알림이 여러 개면 아래 ◀ ▶ 로 넘겨요. ✕ 는 그 알림을 닫아요 (알림함에 남아요).
+
+### 선택형 질문
+
+Claude Code 의 선택형 질문(AskUserQuestion)과 Multica 의 여러 질문 결정은 말풍선이 **질문 모드**로 바뀌어요.
+
+- 질문을 하나씩 보여 주고, 고르면 다음 질문으로 넘어가요. ⭐ 는 추천, 「⭐ 추천대로 채우기」로 빈 질문을 한 번에 채워요.
+- **여러 개 고르기** — 여러 개를 고를 수 있는 질문은 누를 때마다 넣고 빼요. 다 고른 뒤 「다음 질문」이나 「답 보내기」.
+- **직접 입력** — 선택지가 있어도 「직접 입력」 칸에 적어 답할 수 있어요 (터미널의 Other 와 같아요).
+- 모든 질문에 답해야 「답 보내기」가 눌려요. Claude Code 에는 고른 선택지 이름(여러 개면 「가, 다」)이 그대로 넘어가요.
+- 터미널에서 먼저 답하면 말풍선은 바로 내려가요.
+
+### 사용량 한도 재알림
+
+세션이 사용량 한도에 걸려 멈추면 펫이 초기화 시각을 기억해 두었다가, 그 시각이 되면 세션마다 말풍선을 띄워요. 그 전에는 보이지 않아요.
+
+- **Claude Code** — 한도 메시지의 초기화 시각(예: `resets 3pm`)을 읽어요. 한도가 풀리기 전에 그 세션에 다시 입력하면 예약된 알림은 지워져요.
+- **Codex** — 펫이 45초마다 최근 세션 기록(`~/.codex/sessions`)을 읽어 한도로 멈춘 턴과 초기화 시각을 찾아요. 크레딧 소진처럼 초기화 시각이 없으면 바로 알려요.
+- 알림 범위에서 Claude·Codex·Orca 알림을 꺼 둬도 한도 재알림은 와요.
+
+### 알림함
+
+말풍선에서 사라진 알림(닫음·답함·열어 봄·만료·다른 곳에서 처리됨)을 모아 메일함처럼 보여 줘요.
+
+- 왼쪽 목록에서 고르면 오른쪽에 전체 내용과 **그때 고른 답**이 나와요.
+- **다시 띄우기** — 말풍선에 되살려요. Multica 알림은 그 이슈를 다시 확인해서, 아직 사람 차례면 최신 내용으로 띄워요.
+- **원문 열기** · **삭제**. 답을 기다리던 요청(권한·선택형 질문)은 이미 끝나 다시 띄울 수 없어요.
+- 최근 300개까지 남아요.
 
 ## 캐릭터
 
@@ -99,14 +133,16 @@ character.json                                                 # {"faces": "left
 ## 데이터와 외부 전송
 
 - 모든 데이터는 `~/.agent-pet` 에만 저장돼요 (`requests/`·`responses/` 로 소스와 앱이 파일을 주고받음).
+  - `history/` 알림함(지난 알림, 최근 300개) · `notice.log` 알림이 언제 뜨고 왜 사라졌는지 기록 · `hook.log`·`motion.log` 문제 추적용 기록
 - 외부로 나가는 것: Multica 추천 답장과 AI 캐릭터 만들기는 내 `claude` CLI 로 댓글 내용·캐릭터 설명을 Claude 에 보내요. 메뉴에서 끌 수 있어요.
 
 ## 구조
 
 ```
 Sources/AgentPet/   Swift 앱 (AppKit) — 펫·말풍선·메뉴·창 상호작용·연동 설정·업데이트
-hooks/              알림 소스 — multica_watch.py · claude_hook.py · codex_notify.py · orca_suggest.py · make_character.py
+hooks/              알림 소스 — multica_watch.py · claude_hook.py · codex_notify.py · codex_limit.py · orca_suggest.py · make_character.py
 skill/              Claude Code 스킬 pet-character
-scripts/            build.sh · package.sh · install.sh · uninstall.sh · setup_integrations.py
+scripts/            build.sh · package.sh · install.sh · uninstall.sh · setup_integrations.py · release_finish.sh
+docs/               RELEASE.md — 릴리스 체크리스트
 .github/workflows/  release.yml — 태그를 올리면 dmg·zip 을 Release 에 첨부
 ```
