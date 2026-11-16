@@ -292,7 +292,21 @@ def on_limit(hook):
 
 
 def on_clear(hook):
-    remove(os.path.join(REQ, f"claude-{safe(hook.get('session_id'))}.json"))
+    path = os.path.join(REQ, f"claude-{safe(hook.get('session_id'))}.json")
+    if os.path.exists(path):
+        notice_log(f"지움 claude-{safe(hook.get('session_id'))} 터미널에서 다시 입력함")
+    remove(path)
+
+
+def notice_log(msg):
+    """앱과 같은 알림 기록(notice.log)에 한 줄 — 알림이 왜 사라졌는지 추적용"""
+    path = os.path.join(PET, "notice.log")
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()[-499:] if os.path.exists(path) else []
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines + [f"{time.strftime('%m-%d %H:%M:%S')} {msg}"]) + "\n")
+    except OSError:
+        pass
 
 
 def ask_questions(tool_input):

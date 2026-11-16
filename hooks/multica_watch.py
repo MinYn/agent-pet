@@ -643,10 +643,22 @@ def scan():
     for f in os.listdir(REQ) if os.path.isdir(REQ) else []:
         rid = f[:-5]
         if f.endswith(".json") and not rid.startswith("demo") and rid not in keep and is_multica_req(f):
+            notice_log(f"지움 {rid} [multica] 더는 사람 차례가 아님 (Multica 감시)")
             remove(os.path.join(REQ, f))
             st.get("reqs", {}).pop(rid, None)
             notified.pop(rid, None)
     save_state(st)
+
+
+def notice_log(msg):
+    """앱과 같은 알림 기록(notice.log)에 한 줄 — 알림이 왜 사라졌는지 추적용"""
+    path = os.path.join(PET, "notice.log")
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()[-499:] if os.path.exists(path) else []
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines + [f"{time.strftime('%m-%d %H:%M:%S')} {msg}"]) + "\n")
+    except OSError:
+        pass
 
 
 def is_multica_req(name):

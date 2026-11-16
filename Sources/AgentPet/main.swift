@@ -803,6 +803,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var requests: [PetRequest] = []
     var current = 0
+    var shownId = ""                       // 말풍선에 지금 보이는 알림
+    var shownAt = Date.distantPast         // 그 알림으로 바뀐 시각 — 바뀐 직후 잘못 눌림을 가려내려고
+    var selfRemoved: Set<String> = []      // 앱이 직접 지운 알림 — 「앱 밖에서 지워짐」 기록에서 뺀다
     var hidden: [String: Date] = [:]   // 방금 누른 요청 — 파일이 사라질 때까지 숨김
     var bubbleOpen = true
     var lastIds: Set<String> = []
@@ -1046,6 +1049,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 알림 기록 — 언제 떴고 왜 지워졌는지 한 줄씩 (<데이터 폴더>/notice.log, 최근 500줄)
+    func noticeLog(_ msg: String) {
+        let path = petDir + "/notice.log"
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm:ss"
+        var lines = ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        lines.append("\(f.string(from: Date())) \(msg)")
+        try? (lines.suffix(500).joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
     func motionLog(_ msg: String) {   // 창 상호작용 문제 추적용
         let line = "\(Date()) \(msg)\n"
         let path = petDir + "/motion.log"
@@ -1205,6 +1218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let at = r.showAt, at > now { continue }   // 예약 알림 — 그 시각이 되면 새 알림처럼 뜬다
             if r.pending && now.timeIntervalSince(r.created) < 30 { continue }   // 추천 답장 준비 중 — 다 되면 한 번에 보인다
             if let exp = r.expiresAt, exp < now {   // 만료된 알림은 내림
+                selfRemoved.insert(id)
+                noticeLog("지움 \(id) [\(r.source)] 만료(\(Int(now.timeIntervalSince(exp)))초 지남)")
                 try? fm.removeItem(atPath: "\(reqDir)/\(f)")
                 continue
             }
@@ -1219,12 +1234,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fresh = ids.subtracting(lastIds)
         let changed = list.map { "\($0.id)|\($0.headline)|\($0.detail)|\($0.options)" } !=
             requests.map { "\($0.id)|\($0.headline)|\($0.detail)|\($0.options)" }
+        let gone = lastIds.subtracting(ids)   // 지난번엔 보였는데 이번엔 없는 알림
         requests = list
         lastIds = ids
         if let k = keepId, let i = list.firstIndex(where: { $0.id == k }) { current = i } else { current = min(current, max(list.count - 1, 0)) }
         if !fresh.isEmpty && !requests.isEmpty && !list.allSatisfy({ $0.source == "pet" }) {
             summon()   // 새 알림 — 보고 있는 곳으로 와서 알린다 (캐릭터 만들기 진행 알림은 제외)
         }
+        for r in list where fresh.contains(r.id) { noticeLog("뜸 \(r.id) [\(r.source)] \(r.headline.prefix(30))") }
+        for id in gone where !files.contains(id + ".json") && !selfRemoved.contains(id) {
+            noticeLog("사라짐 \(id) — 앱 밖에서 파일이 지워짐")
+        }
+        selfRemoved = selfRemoved.filter { files.contains($0 + ".json") }
         if !fresh.isEmpty {
             bubbleOpen = true
             lastActivity = Date()
@@ -1237,7 +1258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func refreshBubble() {
         guard bubbleOpen, requests.indices.contains(current) else { bubblePanel.orderOut(nil); return }
-        bubbleView.show(requests[current], index: current, total: requests.count)
+        let r = requests[current]
+        if r.id != shownId { shownId = r.id; shownAt = Date() }
+        bubbleView.show(r, index: current, total: requests.count)
         layoutBubble()
         bubblePanel.orderFrontRegardless()
     }
@@ -1274,6 +1297,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // -------------------------------------------------------------------------
 
     func answer(_ r: PetRequest, _ decision: String) {
+        let what = decision == "dismiss" ? "닫기(✕)" : decision == "open" ? "열기 버튼" :
+                   decision.hasPrefix("multi:") ? "질문 답 보내기" : "버튼 \(decision)"
+        let since = r.id == shownId ? String(format: "%.1f초", Date().timeIntervalSince(shownAt)) : "다른 알림이 보이는 중"
+        noticeLog("누름 \(r.id) [\(r.source)] \(what) · 이 말풍선으로 바뀐 지 \(since)")
+        selfRemoved.insert(r.id)
         let path = "\(respDir)/\(r.id).json"
         if let d = try? JSONSerialization.data(withJSONObject: ["decision": decision]) {
             fm.createFile(atPath: path + ".tmp", contents: d)
