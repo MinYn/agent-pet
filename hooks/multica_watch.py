@@ -683,10 +683,24 @@ def notice(rid, headline, detail):
                                   "options": [], "ids": [], "expires_at": time.time() + 20})
 
 
+def already_sent(info, content, me):
+    """답하려는 에이전트 댓글 뒤에 내가 같은 내용을 이미 달았는지 — 같은 답이 반복해서 나가는 것을 막는다.
+    조회에 실패하면 막지 않는다(답이 안 나가는 쪽이 더 나쁘다)"""
+    try:
+        comments = rows(cli("issue", "comment", "list", info["issue"]), "comments")
+    except Exception:
+        return False
+    asked = next((c.get("created_at") or "" for c in comments if c.get("id") == info.get("parent")), "")
+    norm = lambda t: re.sub(r"\s+", " ", t or "").strip()
+    return any(c.get("author_type") == "member" and c.get("author_id") == me and (c.get("created_at") or "") > asked
+               and norm(c.get("content")) == norm(content) for c in comments)
+
+
 def respond():
     """눌린 답장 처리 — 화면에 보이는 동작(페이지 열기·댓글 달기)은 락 없이 바로 하고,
     상태 기록(다시 안 띄움)만 scan이 끝나길 기다렸다가 최신 상태에 반영한다"""
-    snap = load_state().get("reqs", {})
+    st0 = load_state()
+    snap, me = st0.get("reqs", {}), st0.get("me", "")
     done = []   # 상태에 반영할 (rid, info)
     for f in os.listdir(RESP) if os.path.isdir(RESP) else []:
         if not f.endswith(".json") or f.startswith("demo"):
@@ -716,6 +730,9 @@ def respond():
             replies = info.get("replies") or REPLIES.get(info["kind"], [])
             i = int(d.split(":")[1])
             content = replies[i] if i < len(replies) else None
+        if content and already_sent(info, content, me):   # 같은 질문에 같은 답이 이미 달려 있음 — 다시 보내지 않는다
+            notice(rid, "이미 같은 답을 보냈어요", f"「{plain(content, 60)}」는 이 질문에 이미 달려 있어요. 에이전트의 다음 답을 기다려 주세요.")
+            content = None
         if content:
             args = ["issue", "comment", "add", info["issue"], "--content", content]
             try:
