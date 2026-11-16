@@ -447,14 +447,20 @@ def norm_id(x):
     return re.sub(r"[^0-9a-z가-힣]", "", str(x).lower())
 
 
+def id_letters(v):
+    """질문 번호의 영문 머리(R·Q 등) — 숫자와 한글(「질문」)은 뺀다"""
+    return re.sub(r"[\d가-힣]", "", v)
+
+
 def same_id(a, b):
-    """질문 번호가 같은지 — 「질문1」과 「1」처럼 표기가 달라도 숫자가 같으면 같은 질문"""
+    """질문 번호가 같은지 — 「질문1」과 「1」처럼 표기가 달라도 숫자가 같으면 같은 질문.
+    R·Q 같은 영문 머리가 양쪽에 다 있으면 그것도 같아야 한다"""
     na, nb = norm_id(a), norm_id(b)
     if na == nb:
         return True
     da, db = re.sub(r"\D", "", na), re.sub(r"\D", "", nb)
-    letters = lambda v: re.sub(r"[\d가-힣]", "", v)   # R·Q 같은 영문 머리는 같아야 한다 (한글 「질문」은 무시)
-    return bool(da) and da == db and (not letters(na) or not letters(nb) or letters(na) == letters(nb))
+    la, lb = id_letters(na), id_letters(nb)
+    return bool(da) and da == db and (not la or not lb or la == lb)
 
 
 def first_json(text):
@@ -597,7 +603,7 @@ def scan():
         primary = next((i for i, o in enumerate(options) if o.startswith("⭐")), None)
         multi = qs if (kind in ("ask", "human") and qs and qs.get("questions")) else None
         write_req(rid, {
-            **({"questions": multi["questions"], "multi_count": len(multi["questions"])} if multi else {}),
+            **({"questions": multi["questions"]} if multi else {}),
             "source": "multica",
             "full": full,   # 앱이 「자세히」로 펼쳐 보여 줄 전문
             "full_md": (text or "")[:6000],   # 원문 마크다운 — 앱이 마크다운으로 그린다
