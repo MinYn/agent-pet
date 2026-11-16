@@ -435,6 +435,44 @@ final class PetView: NSView {
 /// 말풍선 창 — 입력 칸을 누를 때만 키보드 입력을 받는다 (테두리 없는 패널은 기본적으로 못 받는다)
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
+    /// 빈 곳·글자를 끌 때 — 마우스 이동량(화면 좌표)
+    var onDrag: ((NSPoint) -> Void)?
+    var onDragEnd: (() -> Void)?
+    private var grabAt: NSPoint?
+    private var dragging = false
+
+    /// 버튼·입력 칸·펼친 본문(스크롤·글자 선택)은 원래대로 동작한다
+    private func grabbable(_ e: NSEvent) -> Bool {
+        guard onDrag != nil, let cv = contentView,
+              var v = cv.hitTest(cv.convert(e.locationInWindow, from: nil)) else { return false }
+        while true {
+            if v is NSButton || v is NSTextView || v is NSScroller || v is NSScrollView { return false }
+            if let tf = v as? NSTextField, tf.isEditable { return false }
+            guard let up = v.superview, v !== cv else { return true }
+            v = up
+        }
+    }
+
+    override func sendEvent(_ e: NSEvent) {
+        switch e.type {
+        case .leftMouseDown where grabbable(e):
+            grabAt = NSEvent.mouseLocation
+            dragging = false
+            return
+        case .leftMouseDragged where grabAt != nil:
+            let now = NSEvent.mouseLocation
+            if !dragging, abs(now.x - grabAt!.x) + abs(now.y - grabAt!.y) > 3 { dragging = true }
+            if dragging { onDrag?(NSPoint(x: now.x - grabAt!.x, y: now.y - grabAt!.y)); grabAt = now }
+            return
+        case .leftMouseUp where grabAt != nil:
+            if dragging { onDragEnd?() }
+            grabAt = nil
+            dragging = false
+            return
+        default:
+            super.sendEvent(e)
+        }
+    }
 }
 
 func makePanel(_ rect: NSRect, keyable: Bool = false) -> NSPanel {
@@ -1027,23 +1065,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         petPanel.contentView = petView
         petView.onClick = { [weak self] in self?.toggleBubble() }
         petView.onMenu = { [weak self] e in self?.showMenu(e) }
-        petView.onDrag = { [weak self] d in
-            self?.place = .held
-            self?.walkTarget = nil
-            self?.pauseUntil = Date().addingTimeInterval(1.5)   // 끌고 있는 동안은 걷지 않음
-            self?.movePet(by: d)
-        }
-        petView.onDragEnd = { [weak self] in
-            guard let self else { return }
-            if let sc = self.petPanel.screen { Settings.shared.display = sc.localizedName }   // 끌어다 놓은 모니터를 기억
-            self.walkTarget = nil
-            self.dropPet()
-        }
+        petView.onDrag = { [weak self] d in self?.dragPet(by: d) }
+        petView.onDragEnd = { [weak self] in self?.endDragPet() }
         petPanel.orderFrontRegardless()
         if windowPlay { place = .falling(vy: 0, vx: 0) }   // 시작하면 아래 발판(창·Dock·바닥)으로 내려앉는다
 
         bubblePanel = makePanel(NSRect(x: 0, y: 0, width: BubbleView.width, height: 200), keyable: true)
         bubblePanel.becomesKeyOnlyIfNeeded = true
+        if let kp = bubblePanel as? KeyablePanel {   // 말풍선을 끌어도 펫을 옮긴다
+            kp.onDrag = { [weak self] d in self?.dragPet(by: d) }
+            kp.onDragEnd = { [weak self] in self?.endDragPet() }
+        }
         bubbleView = BubbleView(frame: bubblePanel.contentView!.bounds)
         bubblePanel.contentView = bubbleView
         bubbleView.onChoose = { [weak self] r, id in self?.answer(r, id) }
@@ -1252,6 +1284,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 움직임·애니메이션
     // -------------------------------------------------------------------------
 
+    /// 펫(또는 말풍선)을 끄는 중 — 하던 점프·낙하·알림 이동을 그 즉시 멈추고 마우스를 따라온다
+    func dragPet(by d: NSPoint) {
+        place = .held
+        walkTarget = nil
+        summonTarget = nil
+        sleepTarget = nil
+        pauseUntil = Date().addingTimeInterval(1.5)   // 끌고 있는 동안은 걷지 않음
+        movePet(by: d)
+    }
+
+    func endDragPet() {
+        if let sc = petPanel.screen { Settings.shared.display = sc.localizedName }   // 끌어다 놓은 모니터를 기억
+        walkTarget = nil
+        dropPet()
+    }
+
     func movePet(by d: NSPoint) {
         var f = petPanel.frame
         f.origin.x += d.x
@@ -1366,11 +1414,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// 말풍선 위에 마우스를 올렸거나 누르고 있다
-    var bubbleHeld: Bool {
-        bubblePanel.isVisible && bubblePanel.frame.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
-    }
-
     /// 알림 위치로 한 번 점프 (최대 200pt) — 도착했으면 false
     func summonHop(toward target: CGFloat, now: Date) -> Bool {
         let f = petPanel.frame
@@ -1456,10 +1499,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if let moved = physics(now) {   // 점프·낙하 중엔 행동 대신 그 동작
             frame = moved
             if case .falling = place { tilt = CGFloat(sin(t * 9)) * 6 }   // 떨어질 땐 버둥버둥
-        } else if bubbleHeld {   // 말풍선을 잡고 있으면 무슨 행동이든 멈추고 가만히 있는다
-            summonTarget = nil
-            walkTarget = nil
-            frame = requests.isEmpty ? "idle" : "special"
         } else if now.timeIntervalSince(landedAt) < 0.18 {   // 착지 찌그러짐
             squash = 0.18 * CGFloat(1 - now.timeIntervalSince(landedAt) / 0.18)
         } else if now < happyUntil {   // 답장·클릭 직후 기뻐서 높이 뜀
@@ -1537,10 +1576,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if kind != lastPlaceKind { motionLog("장소 \(lastPlaceKind) → \(place)"); lastPlaceKind = kind }
         keepOnHomeScreen(now)
         let origin = petPanel.frame.origin
-        if !bubbleHeld {   // 잡고 있는 동안 말풍선은 제자리 — 놓으면 그사이 움직인 펫 위치로 다시 맞춘다
-            if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
-            lastOrigin = origin
-        }
+        if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
+        lastOrigin = origin
     }
 
     // -------------------------------------------------------------------------
