@@ -793,10 +793,16 @@ if __name__ == "__main__":
             for f in os.listdir(RESP) if os.path.isdir(RESP) else []:
                 if f.startswith("demo"):
                     remove(os.path.join(RESP, f)); remove(os.path.join(REQ, f))
-        elif arg == "--undismiss":   # 펫 메뉴 「닫은 알림 다시 보기」 — 닫음·알림 기록을 지우고 바로 다시 훑는다
+        elif arg == "--undismiss":   # 닫음·알림 기록을 지우고 바로 다시 훑는다 — 이슈 id 를 주면 그 이슈만 (알림함 「다시 띄우기」)
             fcntl.flock(lock, fcntl.LOCK_EX)
             st = load_state()
-            st["dismissed"], st["notified"] = {}, {}
+            only = sys.argv[2] if len(sys.argv) > 2 else ""
+            if only:
+                st.get("dismissed", {}).pop(only, None)
+                prefix = only[:13].replace("-", "")
+                st["notified"] = {k: v for k, v in st.get("notified", {}).items() if not k.startswith(prefix)}
+            else:
+                st["dismissed"], st["notified"] = {}, {}
             save_state(st)
             scan()
         elif arg == "--demo":

@@ -238,6 +238,11 @@ final class SourceRunner {
         run("multica-undismiss", ["-I", multicaScript, "--undismiss"])
     }
 
+    /// 알림함에서 다시 띄우기 — 그 이슈의 닫음 기록만 지우고 바로 다시 훑는다
+    func undismissMultica(issue: String, done: @escaping () -> Void) {
+        run("multica-undismiss-\(issue)", ["-I", multicaScript, "--undismiss", issue], completion: done)
+    }
+
     func scanMultica() {
         guard Settings.shared.sourceOn("multica") else { return }
         run("multica-scan", ["-I", multicaScript])
