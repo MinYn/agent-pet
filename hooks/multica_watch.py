@@ -362,10 +362,10 @@ def suggest(st, issue, comment):
              "--no-session-persistence", "--system-prompt", SUGGEST_PROMPT],
             input=f"이슈: {issue.get('identifier', '')} {issue.get('title', '')}\n\n에이전트 댓글:\n{body}",
             capture_output=True, text=True, timeout=SUGGEST_TIMEOUT, cwd=PET)
-        m = re.search(r"\{.*\}", r.stdout, re.S)
-        if not m:
+        try:
+            data = first_json(r.stdout)
+        except ValueError:
             raise RuntimeError(f"추천 응답 해석 실패: {(r.stderr or r.stdout).strip()[:150]}")
-        data = json.loads(m.group(0))
         opts = [o for o in data.get("options", []) if o.get("label") and o.get("reply")][:3]
         opts.sort(key=lambda o: not o.get("recommended"))   # 추천을 맨 앞에
         pairs = [(("⭐ " if o.get("recommended") else "") + o["label"][:18], o["reply"]) for o in opts]
@@ -410,6 +410,135 @@ def parent_of(st, issue):
         return None
 
 
+QUESTIONS_PROMPT = """너는 AI 에이전트가 사람에게 남긴 댓글에서 「사람이 골라야 할 질문들」을 빠짐없이 뽑는다.
+
+출력은 JSON 하나만:
+{"multi": true|false,
+ "questions": [{"id": "댓글에 적힌 질문 번호 그대로(예: R1, Q2, 3, 질문4)", "title": "질문 한 줄 요약(60자 이내)",
+                "options": [{"no": "선택지 번호 그대로(예: 1, A)", "label": "선택지 요약(40자 이내)", "recommended": true|false}],
+                "free": true|false}],
+ "item_format": "답 하나의 모양 — {id} 와 {option} 자리표시 (예: {id}-{option})",
+ "separator": "답 사이 구분자 (예: , )"}
+
+규칙
+- 질문이 2개 이상이고 각 질문에 번호가 있을 때만 multi=true. 질문이 하나뿐이면 multi=false, questions 는 비운다.
+- 댓글의 모든 질문을 순서대로 빠짐없이 넣는다. 질문 번호 형식(R1·Q1·1)·1. ·질문 1·①)이 무엇이든 댓글에 적힌 그대로 id 에 쓴다.
+- 「(추천)」 「추천」 「권장」 표시가 있는 선택지만 recommended=true.
+- 선택지 없이 값을 적어 달라는 질문(버전·이름·날짜 등)은 free=true, options 는 비운다.
+- item_format·separator 는 댓글이 예시로 준 답 형식(예: `R1-1, R2-1`)을 따른다. 예시가 없으면 {id}-{option} 과 , 를 쓴다."""
+
+QID_PATTERNS = [   # 댓글에서 질문 번호처럼 보이는 것 — Claude 결과에 빠진 번호가 없는지 대조용
+    r"(?m)^\s*(?:[*_>#\s]*)([A-Za-z]{1,2}\d{1,2})\s*[.):]",   # R1. Q2) A3:
+    r"(?m)^\s*(?:[*_>#\s]*)질문\s*(\d{1,2})",                 # 질문 1
+]
+
+
+def question_ids_in(text):
+    """댓글에 보이는 질문 번호들 (형식별로 2개 이상일 때만 질문 목록으로 본다)"""
+    found = []
+    for pat in QID_PATTERNS:
+        ids = [m.group(1) for m in re.finditer(pat, text or "")]
+        if len(set(ids)) >= 2:
+            found += ids
+    return list(dict.fromkeys(found))
+
+
+def norm_id(x):
+    return re.sub(r"[^0-9a-z가-힣]", "", str(x).lower())
+
+
+def same_id(a, b):
+    """질문 번호가 같은지 — 「질문1」과 「1」처럼 표기가 달라도 숫자가 같으면 같은 질문"""
+    na, nb = norm_id(a), norm_id(b)
+    if na == nb:
+        return True
+    da, db = re.sub(r"\D", "", na), re.sub(r"\D", "", nb)
+    letters = lambda v: re.sub(r"[\d가-힣]", "", v)   # R·Q 같은 영문 머리는 같아야 한다 (한글 「질문」은 무시)
+    return bool(da) and da == db and (not letters(na) or not letters(nb) or letters(na) == letters(nb))
+
+
+def first_json(text):
+    """응답에서 첫 JSON 객체만 읽는다 (뒤에 덧붙은 글은 무시)"""
+    i = text.find("{")
+    if i < 0:
+        raise ValueError("JSON 없음")
+    return json.JSONDecoder().raw_decode(text[i:])[0]
+
+
+def ask_questions(text, feedback=""):
+    if not CLAUDE:
+        raise RuntimeError("claude CLI 를 찾지 못함")
+    env = dict(os.environ, AGENT_PET_INTERNAL="1")
+    r = subprocess.run(
+        [CLAUDE, "-p", "--model", SUGGEST_MODEL, "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+         "--no-session-persistence", "--system-prompt", QUESTIONS_PROMPT],
+        input=f"댓글:\n{MENTION.sub(lambda m: m.group(1), text)[:9000]}" + (f"\n\n{feedback}" if feedback else ""),
+        capture_output=True, text=True, timeout=SUGGEST_TIMEOUT * 2, cwd=PET, env=env)
+    try:
+        return first_json(r.stdout)
+    except ValueError:
+        raise RuntimeError(f"질문 응답 해석 실패: {(r.stderr or r.stdout).strip()[:150]}")
+
+
+def parse_questions(st, comment):
+    """여러 질문에 번호로 답해야 하는 댓글이면 질문 목록 — 아니면 None. 댓글 id별로 한 번만 읽는다.
+    Claude 가 읽은 질문 번호를 댓글에서 따로 찾은 번호와 대조해, 하나라도 빠지면 다시 읽히고 그래도 빠지면 None"""
+    cache = st.setdefault("questions", {})
+    cid = comment.get("id")
+    if cid in cache:
+        return cache[cid] or None
+    text = comment.get("content") or ""
+    result = None
+    try:
+        seen = question_ids_in(text)
+        try:
+            data = ask_questions(text)
+        except (RuntimeError, subprocess.TimeoutExpired):
+            data = ask_questions(text)   # 한 번 더
+        for attempt in range(2):
+            qs = [q for q in data.get("questions") or [] if q.get("id")]
+            missing = [x for x in seen if not any(same_id(x, q["id"]) for q in qs)]
+            bad = [q["id"] for q in qs if not q.get("free") and not q.get("options")]
+            if data.get("multi") and len(qs) >= 2 and not missing and not bad:
+                fmt = data.get("item_format") or "{id}-{option}"
+                if "{id}" not in fmt or "{option}" not in fmt:
+                    fmt = "{id}-{option}"
+                fmt = re.sub(r"^[A-Za-z가-힣]+\{id\}", "{id}", fmt)   # 질문 번호에 이미 머리글자가 있으니 겹치지 않게 (R{id} → {id})
+                result = {"questions": [{"id": str(q["id"]), "title": str(q.get("title", ""))[:80],
+                                         "free": bool(q.get("free")),
+                                         "options": [{"no": str(o.get("no")), "label": str(o.get("label", ""))[:60],
+                                                      "recommended": bool(o.get("recommended"))}
+                                                     for o in (q.get("options") or []) if o.get("no") is not None]}
+                                        for q in qs],
+                          "item_format": fmt, "separator": data.get("separator") or ", "}
+                break
+            if not data.get("multi") and not seen:
+                break   # 질문이 하나뿐인 댓글
+            if attempt == 0:   # 빠진 번호를 알려 주고 한 번 더
+                data = ask_questions(text, "이전 결과에서 빠지거나 선택지가 없는 질문: "
+                                     + ", ".join(missing + bad) + " — 모든 질문을 빠짐없이 다시 출력하라.")
+        if result is None and seen:
+            result = {"incomplete": True, "count": len(seen)}   # 질문은 여럿인데 다 못 읽음 → 직접 답하라고 안내
+    except Exception as e:
+        with open(os.path.join(PET, "watch.err"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%m-%d %H:%M:%S')} questions {e}\n")
+    cache[cid] = result or {}
+    return result
+
+
+def build_answer(info, answers):
+    """질문별 답 → 댓글 문장. 모든 질문 번호가 정확히 한 번씩 채워졌을 때만 (아니면 None)"""
+    qs = info.get("questions") or []
+    if not qs or any(not str(answers.get(q["id"], "")).strip() for q in qs):
+        return None
+    fmt, sep = info.get("item_format") or "{id}-{option}", info.get("separator") or ", "
+    parts = []
+    for q in qs:
+        a = str(answers[q["id"]]).strip()
+        parts.append(f"{q['id']}: {a}" if q.get("free") else fmt.replace("{id}", q["id"]).replace("{option}", a))
+    return sep.join(parts)
+
+
 def scan():
     st = load_state()
     refresh_static(st)
@@ -445,9 +574,12 @@ def scan():
                 agent = names[lastc["author_id"]]
             calling = lastc and "mention://member/" in text.split("\n")[0]
             headline = question_of(text) if (kind == "ask" or calling) else headline
-            pairs = answers_of(text, st.get("agents", []))
             detail = plain("\n".join(text.strip().split("\n")[1:])) if (kind == "ask" or calling) else plain(text)
-            if not pairs and lastc:   # 답 형식을 정해 주지 않은 질문 → Claude 추천 답장
+            qs = parse_questions(st, lastc) if lastc else None
+            pairs = [] if (qs and qs.get("questions")) else answers_of(text, st.get("agents", []))
+            if qs and qs.get("incomplete"):   # 질문은 여럿인데 다 못 읽음 — 틀린 답을 보내지 않게 버튼 없이
+                detail = plain(f"질문 {qs['count']}개 — Multica에서 직접 답해 주세요. · {detail}", 200)
+            elif not pairs and lastc and not qs:   # 답 형식을 정해 주지 않은 질문 → Claude 추천 답장
                 pairs, reason = suggest(st, issue, lastc)
                 if reason:
                     detail = plain(f"⭐ 추천: {reason} · {detail}", 200)
@@ -463,7 +595,9 @@ def scan():
         options, ids = [p[0] for p in pairs], [f"reply:{i}" for i in range(len(pairs))]
         full = full_text(text) if lastc else ""
         primary = next((i for i, o in enumerate(options) if o.startswith("⭐")), None)
+        multi = qs if (kind in ("ask", "human") and qs and qs.get("questions")) else None
         write_req(rid, {
+            **({"questions": multi["questions"], "multi_count": len(multi["questions"])} if multi else {}),
             "source": "multica",
             "full": full,   # 앱이 「자세히」로 펼쳐 보여 줄 전문
             "full_md": (text or "")[:6000],   # 원문 마크다운 — 앱이 마크다운으로 그린다
@@ -479,9 +613,11 @@ def scan():
         })
         notified[rid] = sig
         st.setdefault("reqs", {})[rid] = {"issue": issue["id"], "parent": (lastc or {}).get("id"), "kind": kind, "sig": sig,
-                                          "replies": [p[1] for p in pairs], "full": full}
+                                          "replies": [p[1] for p in pairs], "full": full,
+                                          **(multi or {})}
     live = {r.get("parent") for r in st.get("reqs", {}).values()}
     st["suggest"] = {k: v for k, v in st.get("suggest", {}).items() if k in live}
+    st["questions"] = {k: v for k, v in st.get("questions", {}).items() if k in live}
     # 더는 해당 안 되는 요청은 말풍선에서 내림
     for f in os.listdir(REQ) if os.path.isdir(REQ) else []:
         rid = f[:-5]
@@ -490,6 +626,12 @@ def scan():
             st.get("reqs", {}).pop(rid, None)
             notified.pop(rid, None)
     save_state(st)
+
+
+def notice(rid, headline, detail):
+    """펫 자체 안내 말풍선 (잠깐 보였다 사라짐)"""
+    write_req(f"pet-info-{rid}", {"source": "pet", "tag": "Multica", "headline": headline, "detail": detail,
+                                  "options": [], "ids": [], "expires_at": time.time() + 20})
 
 
 def respond():
@@ -511,19 +653,30 @@ def respond():
         info = snap.get(rid)
         with open(os.path.join(PET, "respond.log"), "a", encoding="utf-8") as fl:   # 눌린 버튼 기록 (문제 추적용)
             fl.write(f"{time.strftime('%m-%d %H:%M:%S')} {rid} {d} info={'있음' if info else '없음'}\n")
-        if info and d.startswith("reply:"):
+        content = None
+        if info and d.startswith("multi:"):   # 질문 모드 — 모든 질문 번호가 채워졌을 때만 보낸다
+            try:
+                content = build_answer(info, json.loads(d[len("multi:"):]))
+            except ValueError:
+                content = None
+            if content is None:
+                notice(rid, "답이 빠진 질문이 있어 보내지 않았어요", "말풍선에서 모든 질문에 답한 뒤 다시 보내 주세요.")
+                remove(work)
+                continue
+        elif info and d.startswith("reply:"):
             replies = info.get("replies") or REPLIES.get(info["kind"], [])
             i = int(d.split(":")[1])
-            if i < len(replies):
-                args = ["issue", "comment", "add", info["issue"], "--content", replies[i]]
+            content = replies[i] if i < len(replies) else None
+        if content:
+            args = ["issue", "comment", "add", info["issue"], "--content", content]
+            try:
+                cli(*args, *(["--parent", info["parent"]] if info.get("parent") else []))
+            except Exception:
                 try:
-                    cli(*args, *(["--parent", info["parent"]] if info.get("parent") else []))
+                    cli(*args)   # 답글이 안 되면 새 댓글로
                 except Exception:
-                    try:
-                        cli(*args)   # 답글이 안 되면 새 댓글로
-                    except Exception:
-                        os.rename(work, os.path.join(RESP, f))   # 다음에 다시 시도
-                        continue
+                    os.rename(work, os.path.join(RESP, f))   # 다음에 다시 시도
+                    continue
         base = rid
         if info:   # 답했거나 [이슈 열기]·✕ → scan이 상태에 반영하기 전에 다시 띄우지 않게 표시
             os.makedirs(ANSWERED, exist_ok=True)

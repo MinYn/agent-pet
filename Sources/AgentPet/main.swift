@@ -102,6 +102,15 @@ final class Settings {
 // 요청(말풍선 하나)
 // =============================================================================
 
+/// 여러 질문에 번호로 답하는 알림의 질문 하나 (Multica 결정 대기 등)
+struct PetQuestion {
+    let id: String
+    let title: String
+    let free: Bool                                       // 선택지 없이 직접 적는 질문
+    let options: [(no: String, label: String, recommended: Bool)]
+    var recommended: String? { options.first { $0.recommended }?.no }
+}
+
 struct PetRequest {
     let id: String
     let source: String
@@ -112,6 +121,8 @@ struct PetRequest {
     let replies: [String]
     /// 추천 답장을 만드는 중 — 붙을 때까지(최대 30초) 앱이 숨긴다
     let pending: Bool
+    /// 여러 질문 — 있으면 말풍선이 질문 모드(하나씩 고르고 한 번에 보내기)
+    let questions: [PetQuestion]
     let tag: String
     let headline: String
     let line: String
@@ -135,6 +146,12 @@ struct PetRequest {
         orcaHandle = o["orca_handle"] as? String ?? ""
         replies = o["replies"] as? [String] ?? []
         pending = o["pending"] as? Bool ?? false
+        questions = (o["questions"] as? [[String: Any]] ?? []).map { q in
+            PetQuestion(id: q["id"] as? String ?? "", title: q["title"] as? String ?? "", free: q["free"] as? Bool ?? false,
+                        options: (q["options"] as? [[String: Any]] ?? []).map {
+                            (no: $0["no"] as? String ?? "", label: $0["label"] as? String ?? "", recommended: $0["recommended"] as? Bool ?? false)
+                        })
+        }
         tag = o["tag"] as? String ?? ""
         headline = o["headline"] as? String ?? ""
         line = o["line"] as? String ?? ""
@@ -415,8 +432,15 @@ final class PetView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-func makePanel(_ rect: NSRect) -> NSPanel {
-    let p = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+/// 말풍선 창 — 입력 칸을 누를 때만 키보드 입력을 받는다 (테두리 없는 패널은 기본적으로 못 받는다)
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+func makePanel(_ rect: NSRect, keyable: Bool = false) -> NSPanel {
+    let style: NSWindow.StyleMask = [.borderless, .nonactivatingPanel]
+    let p = keyable ? KeyablePanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+                    : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
     p.isOpaque = false
     p.backgroundColor = .clear
     p.hasShadow = false
@@ -565,8 +589,12 @@ final class BubbleView: NSVisualEffectView {
             stack.addArrangedSubview(t)
         }
 
+        if !r.questions.isEmpty {
+            showQuestions(r, index: index, total: total, inner: inner)
+        }
+
         // 빠른 답장 — 추천 답은 강조
-        for (i, title) in r.options.enumerated() {
+        for (i, title) in r.options.enumerated() where r.questions.isEmpty {
             let id = i < r.ids.count ? r.ids[i] : "reply:\(i)"
             let b = ActionButton(title, primary: i == r.primary) { [weak self] in self?.onChoose?(r, id) }
             add(b, inner)
@@ -590,6 +618,109 @@ final class BubbleView: NSVisualEffectView {
         let row = NSStackView(views: bottom)
         row.widthAnchor.constraint(equalToConstant: inner).isActive = true
         stack.addArrangedSubview(row)
+    }
+
+    // -------------------------------------------------------------------------
+    // 질문 모드 — 질문을 하나씩 보여 주고, 모든 질문 번호가 채워져야 보낼 수 있다
+    // -------------------------------------------------------------------------
+
+    /// 요청별 진행 상태: 지금 질문 위치 · 질문 번호별 답
+    private var qState: [String: (at: Int, answers: [String: String])] = [:]
+
+    private func showQuestions(_ r: PetRequest, index: Int, total: Int, inner: CGFloat) {
+        var st = qState[r.id] ?? (0, [:])
+        st.at = min(max(st.at, 0), r.questions.count - 1)
+        qState[r.id] = st
+        let q = r.questions[st.at]
+        let done = r.questions.filter { !(st.answers[$0.id] ?? "").isEmpty }.count
+        let redraw = { [weak self] in
+            guard let self else { return }
+            self.show(r, index: index, total: total)
+            self.onResize?()
+        }
+
+        // 질문 머리: 「질문 3/10 · R3」 + 질문 요약
+        let head = label("질문 \(st.at + 1)/\(r.questions.count) · \(q.id)", size: 11, weight: .semibold, color: .secondaryLabelColor, lines: 1)
+        add(head, inner)
+        add(label(q.title, size: 13, weight: .medium, lines: 3), inner)
+
+        if q.free {   // 직접 적는 질문 — 입력 칸 + 확인
+            let field = NSTextField(string: st.answers[q.id] ?? "")
+            field.placeholderString = "답을 적어 주세요"
+            field.font = BubbleFont.font(12)
+            let ok = ActionButton("확인", primary: true, small: true) { [weak self] in
+                guard let self else { return }
+                let v = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.qState[r.id]?.answers[q.id] = v.isEmpty ? nil : v
+                self.advance(r)
+                redraw()
+            }
+            let row = NSStackView(views: [field, ok])
+            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            add(row, inner)
+        } else {      // 선택지 — 고른 답 ✓, 추천 ⭐
+            for o in q.options {
+                let picked = st.answers[q.id] == o.no
+                let title = (picked ? "✓ " : "") + (o.recommended ? "⭐ " : "") + "\(o.no). \(o.label)"
+                let b = ActionButton(title, primary: picked) { [weak self] in
+                    self?.qState[r.id]?.answers[q.id] = o.no
+                    self?.advance(r)
+                    redraw()
+                }
+                add(b, inner)
+            }
+        }
+
+        // 질문 이동 · 추천대로 채우기
+        let prev = ActionButton("◀ 이전 질문", small: true) { [weak self] in
+            self?.qState[r.id]?.at -= 1
+            redraw()
+        }
+        let next = ActionButton("다음 질문 ▶", small: true) { [weak self] in
+            self?.qState[r.id]?.at += 1
+            redraw()
+        }
+        prev.isEnabled = st.at > 0
+        next.isEnabled = st.at < r.questions.count - 1
+        let fill = ActionButton("⭐ 추천대로 채우기", small: true) { [weak self] in
+            guard let self else { return }
+            for q in r.questions where (self.qState[r.id]?.answers[q.id] ?? "").isEmpty {
+                if let rec = q.recommended { self.qState[r.id]?.answers[q.id] = rec }
+            }
+            self.jumpToFirstEmpty(r)   // 추천이 없거나 직접 적을 질문으로
+            redraw()
+        }
+        fill.isEnabled = r.questions.contains { $0.recommended != nil && (st.answers[$0.id] ?? "").isEmpty }
+        let nav = NSStackView(views: [prev, fill, next])
+        nav.distribution = .equalSpacing
+        add(nav, inner)
+
+        // 보내기 — 모든 질문이 채워져야 누를 수 있다
+        let send = ActionButton(done == r.questions.count ? "답 보내기 (\(done)/\(r.questions.count))"
+                                                          : "답 보내기 — \(r.questions.count - done)개 남음", primary: done == r.questions.count) { [weak self] in
+            guard let self, let st = self.qState[r.id],
+                  r.questions.allSatisfy({ !(st.answers[$0.id] ?? "").isEmpty }),
+                  let d = try? JSONSerialization.data(withJSONObject: st.answers),
+                  let json = String(data: d, encoding: .utf8) else { return }
+            self.onChoose?(r, "multi:" + json)
+        }
+        send.isEnabled = done == r.questions.count
+        add(send, inner)
+    }
+
+    /// 답한 뒤 다음 빈 질문으로 (없으면 그대로)
+    private func advance(_ r: PetRequest) {
+        guard let st = qState[r.id] else { return }
+        let n = r.questions.count
+        for k in 1...n {
+            let i = (st.at + k) % n
+            if (st.answers[r.questions[i].id] ?? "").isEmpty { qState[r.id]?.at = i; return }
+        }
+    }
+
+    private func jumpToFirstEmpty(_ r: PetRequest) {
+        guard let st = qState[r.id] else { return }
+        if let i = r.questions.firstIndex(where: { (st.answers[$0.id] ?? "").isEmpty }) { qState[r.id]?.at = i }
     }
 
     private func add(_ v: NSView, _ width: CGFloat) {
@@ -901,7 +1032,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         petPanel.orderFrontRegardless()
         if windowPlay { place = .falling(vy: 0, vx: 0) }   // 시작하면 아래 발판(창·Dock·바닥)으로 내려앉는다
 
-        bubblePanel = makePanel(NSRect(x: 0, y: 0, width: BubbleView.width, height: 200))
+        bubblePanel = makePanel(NSRect(x: 0, y: 0, width: BubbleView.width, height: 200), keyable: true)
         bubblePanel.becomesKeyOnlyIfNeeded = true
         bubbleView = BubbleView(frame: bubblePanel.contentView!.bounds)
         bubblePanel.contentView = bubbleView
