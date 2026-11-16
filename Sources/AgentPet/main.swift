@@ -551,6 +551,7 @@ final class BubbleView: NSVisualEffectView {
     var onChoose: ((PetRequest, String) -> Void)?
     var onOpen: ((PetRequest) -> Void)?
     var onDismiss: ((PetRequest) -> Void)?
+    var onMinimize: (() -> Void)?
     var onNav: ((Int) -> Void)?
     var onResize: (() -> Void)?
     private var expanded: Set<String> = []
@@ -592,7 +593,10 @@ final class BubbleView: NSVisualEffectView {
         let close = ActionButton("✕", small: true) { [weak self] in self?.onDismiss?(r) }
         close.isBordered = false
         close.toolTip = "이 알림 닫기 (상태가 바뀔 때까지 다시 안 띄움)"
-        let top = NSStackView(views: [chip, close])
+        let mini = ActionButton("—", small: true) { [weak self] in self?.onMinimize?() }
+        mini.isBordered = false
+        mini.toolTip = "잠시 숨기기 — 알림은 그대로 남고, 펫을 누르면 이어서 봐요"
+        let top = NSStackView(views: [chip, mini, close])
         top.distribution = .fill
         chip.setContentHuggingPriority(.defaultLow, for: .horizontal)
         top.widthAnchor.constraint(equalToConstant: inner).isActive = true
@@ -1184,6 +1188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Inbox.shared.openLink = { [weak self] link in self?.openLink(link) }
         Inbox.shared.restoreMultica = { [weak self] issue, done in self?.runner.undismissMultica(issue: issue, done: done) }
         bubbleView.onDismiss = { [weak self] r in self?.answer(r, "dismiss") }
+        bubbleView.onMinimize = { [weak self] in self?.minimizeBubble() }
         bubbleView.onNav = { [weak self] d in self?.navigate(d) }
         bubbleView.onResize = { [weak self] in self?.layoutBubble() }
         applyTheme()
@@ -1313,6 +1318,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if y + size.height > screen.maxY { y = pet.minY - size.height - 4 }   // 위가 좁으면 아래로
         y = max(screen.minY + 4, y)
         bubblePanel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+    }
+
+    /// 말풍선만 잠시 숨긴다 — 알림·숫자 배지는 그대로, 펫을 누르면 보던 알림부터 다시 보인다 (새 알림이 오면 다시 열린다)
+    func minimizeBubble() {
+        bubbleOpen = false
+        if requests.indices.contains(current) { noticeLog("숨김 \(requests[current].id) — 최소화 (펫을 누르면 다시)") }
+        refreshBubble()
     }
 
     func toggleBubble() {
