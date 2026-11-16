@@ -778,6 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastOrigin = NSPoint.zero
     var lastPlaceKind = ""
     var summonTarget: CGFloat?   // 알림이 오면 달려갈 x
+    var shakenOff: (id: Int, until: Date)?   // 옮겨진 창 — 잠시 그 창에는 다시 내려앉지 않는다
     /// 모니터 옮겨 가기 — 사라지는 중(그다음 targetScreen 위쪽에서 나타나 떨어진다)
     var transit: (start: Date, screen: NSScreen, x: CGFloat, runTo: CGFloat?)?
     var appearAt = Date.distantPast
@@ -929,7 +930,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 place = .falling(vy: 0, vx: 0)
                 return "walk2"
             }
-            if abs(x - f.minX) > 0.5 || abs(w.top - f.minY) > 0.5 { petPanel.setFrameOrigin(NSPoint(x: x, y: w.top)) }
+            if abs(x - f.minX) > 0.5 || abs(w.top - f.minY) > 0.5 {
+                if id != WindowWorld.dockId {   // 창을 옮기면 따라가지 않고 떨어진다 (Dock 은 아이콘 변화로 폭이 바뀌니 따라간다)
+                    motionLog("창 옮겨짐 id=\(id) 펫=\(f.origin) 기대=(\(x), \(w.top)) 창=\(w.frame) → 떨어짐")
+                    shakenOff = (id, now.addingTimeInterval(1.5))
+                    place = .falling(vy: 0, vx: 0)
+                    return "walk2"
+                }
+                petPanel.setFrameOrigin(NSPoint(x: x, y: w.top))
+            }
             return nil
         case .falling(var vy, let vx):
             vy -= 1600.0 / 30   // 중력
@@ -940,7 +949,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var land = groundY(at: cx, y: f.minY)
             var landId: Int?
             for w in windows where w.frame.minX <= cx && cx <= w.frame.maxX && w.top <= f.minY + 0.5 && w.top >= ny && w.top > land
-                && sc.frame.contains(NSPoint(x: cx, y: w.top)) {   // 같은 모니터 안의 창에만 내려앉는다
+                && sc.frame.contains(NSPoint(x: cx, y: w.top))   // 같은 모니터 안의 창에만 내려앉는다
+                && !(shakenOff.map { $0.id == w.id && now < $0.until } ?? false) {   // 방금 옮겨진 창은 건너뛴다
                 if WindowWorld.topVisible(w, x: cx, in: windows) { land = w.top; landId = w.id }
             }
             if ny <= land {   // 착지
@@ -1356,6 +1366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 말풍선 위에 마우스를 올렸거나 누르고 있다
+    var bubbleHeld: Bool {
+        bubblePanel.isVisible && bubblePanel.frame.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
+    }
+
     /// 알림 위치로 한 번 점프 (최대 200pt) — 도착했으면 false
     func summonHop(toward target: CGFloat, now: Date) -> Bool {
         let f = petPanel.frame
@@ -1448,6 +1463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (bob, squash) = hop(t, period: 0.45, height: 12)
         } else if !requests.isEmpty {   // 알림: 보고 있는 곳까지 달려온 뒤 제자리에서 손짓
             walkTarget = nil
+            if summonTarget != nil, bubbleHeld { summonTarget = nil }   // 말풍선을 잡으면 그 자리에 멈춘다
             if let target = summonTarget, windowPlay, summonHop(toward: target, now: now) {   // 폴짝폴짝 점프해서 다가온다
                 frame = "happy"
             } else if let target = summonTarget, !windowPlay, let st = walkStep(toward: target, speed: 110, now: now, t: t) {
@@ -1518,7 +1534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if kind != lastPlaceKind { motionLog("장소 \(lastPlaceKind) → \(place)"); lastPlaceKind = kind }
         keepOnHomeScreen(now)
         let origin = petPanel.frame.origin
-        if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
+        if bubblePanel.isVisible, origin != lastOrigin, !bubbleHeld { layoutBubble() }   // 잡고 있는 동안 말풍선은 제자리
         lastOrigin = origin
     }
 
