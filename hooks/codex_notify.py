@@ -49,21 +49,24 @@ ORCA = "/Applications/Orca.app/Contents/Resources/bin/orca"
 
 
 def orca_context():
-    """Orca 터미널 안에서 실행된 세션이면 {"handle", "title"} — 아니면 None.
-    Orca 는 자기 터미널에 ORCA_TERMINAL_HANDLE 을 넣어 준다. 제목은 Orca 탭 제목(세션 이름)"""
+    """Orca 에서 실행한 세션이면 {"handle", "title", "session"} — 아니면 None.
+    · 터미널 탭: ORCA_TERMINAL_HANDLE 이 있다 → 그 탭으로 이동·추천 답장 입력 가능
+    · 채팅 모드: ORCA_STRUCTURED_SESSION / ORCA_AGENT_SESSION_ID 만 있다 → 작업 폴더로 이동만 (handle 빈 값)"""
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
-    if not handle:
+    chat = os.environ.get("ORCA_STRUCTURED_SESSION") or os.environ.get("ORCA_AGENT_SESSION_ID")
+    if not handle and not chat:
         return None
     title = ""
-    try:
-        r = subprocess.run([ORCA, "terminal", "show", "--terminal", handle, "--json"],
-                           capture_output=True, text=True, timeout=4)
-        d = json.loads(r.stdout or "{}")
-        t = (d.get("result") or {}).get("terminal") or d.get("result") or {}
-        title = t.get("title") or ""
-    except Exception:
-        pass
-    return {"handle": handle, "title": title}
+    if handle:
+        try:
+            r = subprocess.run([ORCA, "terminal", "show", "--terminal", handle, "--json"],
+                               capture_output=True, text=True, timeout=4)
+            d = json.loads(r.stdout or "{}")
+            t = (d.get("result") or {}).get("terminal") or d.get("result") or {}
+            title = t.get("title") or ""
+        except Exception:
+            pass
+    return {"handle": handle or "", "title": title, "session": os.environ.get("ORCA_AGENT_SESSION_ID", "")}
 
 
 def plain(text, limit):
@@ -105,7 +108,8 @@ def main(argv):
     rid = f"codex-{re.sub(r'[^0-9A-Za-z_-]', '', thread)[:24]}"
     write_req(rid, {
         **({"orca_handle": orca["handle"], "agent_name": "Codex", "stamp": f"{time.time():.6f}",
-            "pending": bool((settings().get("apps", {}).get("orca") or {}).get("suggest", True))} if orca else {}),
+            "pending": bool(orca["handle"]) and bool((settings().get("apps", {}).get("orca") or {}).get("suggest", True))}
+           if orca else {}),
         "source": "orca" if orca else "codex",
         "agent": "codex",
         "tag": f"Orca · Codex · {orca['title'] or os.path.basename(cwd) or '작업'}" if orca
@@ -117,10 +121,11 @@ def main(argv):
         "full_md": answer[:6000],
         "options": [], "ids": [],
         "openLabel": "Orca에서 보기" if orca else "폴더 열기",
-        "link": f"orca-terminal:{orca['handle']}" if orca else (f"file://{cwd}" if cwd else ""),
+        "link": (f"orca-terminal:{orca['handle']}" if orca["handle"] else f"orca-worktree:{cwd}") if orca
+                else (f"file://{cwd}" if cwd else ""),
         "expires_at": expires_at(),
     })
-    if orca and (settings().get("apps", {}).get("orca") or {}).get("suggest", True):   # Orca 세션이면 추천 답장
+    if orca and orca["handle"] and (settings().get("apps", {}).get("orca") or {}).get("suggest", True):   # Orca 터미널 세션이면 추천 답장
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orca_suggest.py")
         subprocess.Popen([sys.executable, "-I", script, os.path.join(REQ, rid + ".json")],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

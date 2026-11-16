@@ -55,21 +55,24 @@ ORCA = "/Applications/Orca.app/Contents/Resources/bin/orca"
 
 
 def orca_context():
-    """Orca 터미널 안에서 실행된 세션이면 {"handle", "title"} — 아니면 None.
-    Orca 는 자기 터미널에 ORCA_TERMINAL_HANDLE 을 넣어 준다. 제목은 Orca 탭 제목(세션 이름)"""
+    """Orca 에서 실행한 세션이면 {"handle", "title", "session"} — 아니면 None.
+    · 터미널 탭: ORCA_TERMINAL_HANDLE 이 있다 → 그 탭으로 이동·추천 답장 입력 가능
+    · 채팅 모드: ORCA_STRUCTURED_SESSION / ORCA_AGENT_SESSION_ID 만 있다 → 작업 폴더로 이동만 (handle 빈 값)"""
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
-    if not handle:
+    chat = os.environ.get("ORCA_STRUCTURED_SESSION") or os.environ.get("ORCA_AGENT_SESSION_ID")
+    if not handle and not chat:
         return None
     title = ""
-    try:
-        r = subprocess.run([ORCA, "terminal", "show", "--terminal", handle, "--json"],
-                           capture_output=True, text=True, timeout=4)
-        d = json.loads(r.stdout or "{}")
-        t = (d.get("result") or {}).get("terminal") or d.get("result") or {}
-        title = t.get("title") or ""
-    except Exception:
-        pass
-    return {"handle": handle, "title": title}
+    if handle:
+        try:
+            r = subprocess.run([ORCA, "terminal", "show", "--terminal", handle, "--json"],
+                               capture_output=True, text=True, timeout=4)
+            d = json.loads(r.stdout or "{}")
+            t = (d.get("result") or {}).get("terminal") or d.get("result") or {}
+            title = t.get("title") or ""
+        except Exception:
+            pass
+    return {"handle": handle or "", "title": title, "session": os.environ.get("ORCA_AGENT_SESSION_ID", "")}
 
 
 def pet_running():
@@ -110,10 +113,12 @@ def base(hook, orca=None):
         return {
             "source": "orca", "agent": "claude",
             "orca_handle": orca["handle"], "agent_name": "Claude Code",
+            "orca_cwd": cwd,
             "stamp": f"{time.time():.6f}",   # 추천 답장이 늦게 붙을 때 같은 알림인지 확인
             "tag": f"Orca · Claude Code · {orca['title'] or os.path.basename(cwd) or '세션'}",
             "openLabel": "Orca에서 보기",
-            "link": f"orca-terminal:{orca['handle']}",
+            # 터미널 탭이면 그 탭으로, 채팅 모드면 그 작업 폴더로
+            "link": f"orca-terminal:{orca['handle']}" if orca["handle"] else f"orca-worktree:{cwd}",
         }
     term = os.environ.get("TERM_PROGRAM", "")
     app = TERMINAL_APPS.get(term)
@@ -139,7 +144,7 @@ def tool_summary(name, tool_input):
 
 def suggest_on():
     """이 알림에 Orca 추천 답장을 붙일지"""
-    return bool(ORCA_CTX) and app_setting("orca", "suggest", True)
+    return bool(ORCA_CTX and ORCA_CTX["handle"]) and app_setting("orca", "suggest", True)   # 답을 넣을 터미널이 있을 때만
 
 
 def orca_followup(rid):

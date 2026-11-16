@@ -907,7 +907,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bubblePanel.contentView = bubbleView
         bubbleView.onChoose = { [weak self] r, id in self?.answer(r, id) }
         bubbleView.onOpen = { [weak self] r in
-            if r.link.hasPrefix("orca-terminal:") {   // Orca 에서 실행한 세션 → 그 터미널 탭으로
+            if r.link.hasPrefix("orca-worktree:") {   // Orca 채팅 모드 세션 → 그 작업 폴더를 열고 Orca 를 앞으로
+                let path = String(r.link.dropFirst("orca-worktree:".count))
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
+                p.arguments = ["worktree", "activate", "--worktree", "path:" + path, "--json"]
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                p.terminationHandler = { _ in
+                    DispatchQueue.main.async {
+                        NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.stablyai.orca" }?.activate()
+                    }
+                }
+                try? p.run()
+            } else if r.link.hasPrefix("orca-terminal:") {   // Orca 에서 실행한 세션 → 그 터미널 탭으로
                 let handle = String(r.link.dropFirst("orca-terminal:".count))
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
