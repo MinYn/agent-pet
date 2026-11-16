@@ -143,6 +143,7 @@ struct PetRequest {
         guard let d = fm.contents(atPath: path),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
         self.id = id
+        raw = o
         source = o["source"] as? String ?? (id.hasPrefix("demo") ? "demo" : "multica")
         agent = o["agent"] as? String ?? ""
         orcaHandle = o["orca_handle"] as? String ?? ""
@@ -176,6 +177,8 @@ struct PetRequest {
 
     /// 사용량 한도 알림 — 소스 설정과 상관없이 보인다
     let isLimit: Bool
+    /// 원본 JSON — 알림함에 그대로 보관한다
+    let raw: [String: Any]
     /// 이 시각까지 숨긴다 (사용량 한도가 풀릴 때 다시 알리기 등)
     let showAt: Date?
     /// 이 시각이 지나면 앱이 내린다 (작업 완료 알림 등)
@@ -1175,45 +1178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bubblePanel.contentView = bubbleView
         bubbleView.onChoose = { [weak self] r, id in self?.answer(r, id) }
         bubbleView.onOpen = { [weak self] r in
-            if r.link.hasPrefix("orca-worktree:") {   // Orca 채팅 모드 세션 → 그 작업 폴더를 열고 Orca 를 앞으로
-                let path = String(r.link.dropFirst("orca-worktree:".count))
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
-                p.arguments = ["worktree", "activate", "--worktree", "path:" + path, "--json"]
-                p.standardOutput = FileHandle.nullDevice
-                p.standardError = FileHandle.nullDevice
-                p.terminationHandler = { _ in
-                    DispatchQueue.main.async {
-                        NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.stablyai.orca" }?.activate()
-                    }
-                }
-                try? p.run()
-            } else if r.link.hasPrefix("orca-terminal:") {   // Orca 에서 실행한 세션 → 그 터미널 탭으로
-                let handle = String(r.link.dropFirst("orca-terminal:".count))
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
-                p.arguments = ["terminal", "switch", "--terminal", handle, "--json"]
-                let logPath = petDir + "/orca.log"   // 실패 원인 추적용
-                fm.createFile(atPath: logPath, contents: nil)
-                let log = FileHandle(forWritingAtPath: logPath)
-                p.standardOutput = log ?? FileHandle.nullDevice
-                p.standardError = log ?? FileHandle.nullDevice
-                p.terminationHandler = { _ in
-                    DispatchQueue.main.async {
-                        NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.stablyai.orca" }?.activate()
-                    }
-                }
-                try? p.run()
-            } else if r.link.hasPrefix("app:") {   // 터미널 앱 등을 앞으로 (claude 훅이 TERM_PROGRAM 으로 정함)
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                p.arguments = ["-a", String(r.link.dropFirst(4))]
-                try? p.run()
-            } else if let u = URL(string: r.link) {
-                NSWorkspace.shared.open(u)
-            }
+            self?.openLink(r.link)
             if !r.awaitsResponse { self?.answer(r, "open") }   // 권한 요청은 열어도 답은 그대로 기다린다
         }
+        Inbox.shared.openLink = { [weak self] link in self?.openLink(link) }
+        Inbox.shared.restoreMultica = { [weak self] issue, done in self?.runner.undismissMultica(issue: issue, done: done) }
         bubbleView.onDismiss = { [weak self] r in self?.answer(r, "dismiss") }
         bubbleView.onNav = { [weak self] d in self?.navigate(d) }
         bubbleView.onResize = { [weak self] in self?.layoutBubble() }
@@ -1256,6 +1225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "sleep": lastActivity = .distantPast; ok = true   // 바로 졸리게 (잠자리로 가는지 시험)
         default:
             if cmd == "update-check" { Updater.check(manual: true); ok = true }
+            else if cmd == "inbox" { Inbox.shared.show(); ok = true }   // 시험용: 알림함 열기
             else if cmd.hasPrefix("press:") {   // 시험용: 말풍선 버튼 누르기 — press:<요청 id>:<버튼 id>
                 let parts = cmd.split(separator: ":", maxSplits: 2).map(String.init)
                 if parts.count == 3, let r = requests.first(where: { $0.id == parts[1] }) { answer(r, parts[2]); ok = true } else { ok = false }
@@ -1282,6 +1252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if r.pending && now.timeIntervalSince(r.created) < 30 { continue }   // 추천 답장 준비 중 — 다 되면 한 번에 보인다
             if let exp = r.expiresAt, exp < now {   // 만료된 알림은 내림
                 selfRemoved.insert(id)
+                Inbox.archive(r, reason: "만료")
                 noticeLog("지움 \(id) [\(r.source)] 만료(\(Int(now.timeIntervalSince(exp)))초 지남)")
                 try? fm.removeItem(atPath: "\(reqDir)/\(f)")
                 continue
@@ -1298,6 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let changed = list.map { "\($0.id)|\($0.headline)|\($0.detail)|\($0.options)" } !=
             requests.map { "\($0.id)|\($0.headline)|\($0.detail)|\($0.options)" }
         let gone = lastIds.subtracting(ids)   // 지난번엔 보였는데 이번엔 없는 알림
+        for r in requests where gone.contains(r.id) && !files.contains(r.id + ".json") && !selfRemoved.contains(r.id) {
+            Inbox.archive(r, reason: "다른 곳에서 처리됨 (터미널에서 입력·상태가 바뀜 등)")
+        }
         requests = list
         lastIds = ids
         if let k = keepId, let i = list.firstIndex(where: { $0.id == k }) { current = i } else { current = min(current, max(list.count - 1, 0)) }
@@ -1359,11 +1333,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 버튼 → 응답 파일
     // -------------------------------------------------------------------------
 
+    /// 알림 링크 열기 — Orca 탭·작업 폴더·터미널 앱·웹 주소 (말풍선 「열기」와 알림함 「원문 열기」가 같이 쓴다)
+    func openLink(_ link: String) {
+        if link.hasPrefix("orca-worktree:") {   // Orca 채팅 모드 세션 → 그 작업 폴더를 열고 Orca 를 앞으로
+            let path = String(link.dropFirst("orca-worktree:".count))
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
+            p.arguments = ["worktree", "activate", "--worktree", "path:" + path, "--json"]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            p.terminationHandler = { _ in
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.stablyai.orca" }?.activate()
+                }
+            }
+            try? p.run()
+        } else if link.hasPrefix("orca-terminal:") {   // Orca 에서 실행한 세션 → 그 터미널 탭으로
+            let handle = String(link.dropFirst("orca-terminal:".count))
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/Applications/Orca.app/Contents/Resources/bin/orca")
+            p.arguments = ["terminal", "switch", "--terminal", handle, "--json"]
+            let logPath = petDir + "/orca.log"   // 실패 원인 추적용
+            fm.createFile(atPath: logPath, contents: nil)
+            let log = FileHandle(forWritingAtPath: logPath)
+            p.standardOutput = log ?? FileHandle.nullDevice
+            p.standardError = log ?? FileHandle.nullDevice
+            p.terminationHandler = { _ in
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.stablyai.orca" }?.activate()
+                }
+            }
+            try? p.run()
+        } else if link.hasPrefix("app:") {   // 터미널 앱 등을 앞으로 (claude 훅이 TERM_PROGRAM 으로 정함)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = ["-a", String(link.dropFirst(4))]
+            try? p.run()
+        } else if let u = URL(string: link) {
+            NSWorkspace.shared.open(u)
+        }
+    }
+
     func answer(_ r: PetRequest, _ decision: String) {
         let what = decision == "dismiss" ? "닫기(✕)" : decision == "open" ? "열기 버튼" :
                    decision.hasPrefix("multi:") ? "질문 답 보내기" : "버튼 \(decision)"
         let since = r.id == shownId ? String(format: "%.1f초", Date().timeIntervalSince(shownAt)) : "다른 알림이 보이는 중"
         noticeLog("누름 \(r.id) [\(r.source)] \(what) · 이 말풍선으로 바뀐 지 \(since)")
+        Inbox.archive(r, reason: decision == "dismiss" ? "닫음" : decision == "open" ? "열어 봄" : "답함", decision: decision)
         selfRemoved.insert(r.id)
         let path = "\(respDir)/\(r.id).json"
         if let d = try? JSONSerialization.data(withJSONObject: ["decision": decision]) {
@@ -1780,6 +1796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("지금 확인") { [weak self] in self?.runner.scanMultica() })
         menu.addItem(item("테스트 알림 보기") { [weak self] in self?.writeDemo() })
+        menu.addItem(item("알림함 — 지난 알림 보기…") { Inbox.shared.show() })
         menu.addItem(item("여기를 집으로") { [weak self] in
             guard let self else { return }
             Settings.shared.home = self.petPanel.frame.origin
@@ -1997,7 +2014,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             root.addItem(top)
         }
         root.addItem(.separator())
-        root.addItem(item("닫은 Multica 알림 다시 보기") { [weak self] in self?.runner.undismissMultica() })
+        root.addItem(item("닫은 알림 다시 보기 (알림함)…") { Inbox.shared.show() })
         return root
     }
 
