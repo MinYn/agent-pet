@@ -2,7 +2,7 @@
 """Claude Code 소스 — ~/.claude/settings.json 의 훅으로 불린다. 훅 입력 JSON은 stdin 으로 온다.
 
   claude_hook.py stop        Stop 훅: 「작업 완료!」 (last_assistant_message)
-  claude_hook.py notify      Notification 훅: 입력 대기·승인 대기 알림
+  claude_hook.py notify      Notification 훅: 승인 대기·선택 대기 알림 (입력 대기 idle_prompt 는 받지 않음)
   claude_hook.py limit       StopFailure 훅(rate_limit): 사용량 한도로 멈춘 세션을 초기화 시각에 다시 알림
   claude_hook.py clear       UserPromptSubmit 훅: 터미널에서 다시 입력하면 그 세션 알림을 내림
   claude_hook.py permission  PermissionRequest 훅(동기): 선택형 질문(AskUserQuestion)은 늘 말풍선으로,
@@ -179,7 +179,7 @@ def on_stop(hook):
 
 def on_notify(hook):
     kind = hook.get("notification_type") or ""
-    if kind == "idle_prompt" and not app_setting("claude", "idle", True):
+    if kind == "idle_prompt":   # 「입력을 기다리고 있어요」는 받지 않는다 — 작업 완료 알림을 덮어써 같은 일을 두 번 알리게 된다
         return
     if kind == "permission_prompt" and not app_setting("claude", "permission_prompt", True):
         return

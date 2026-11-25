@@ -1997,7 +1997,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case "claude":
                 sub.addItem(header("Orca 밖에서 실행한 세션 (Orca 세션은 Orca 설정)"))
                 sub.addItem(header("알릴 때 — Orca 세션에도 적용"))
-                for (key, title) in [("stop", "작업 완료"), ("idle", "입력을 기다릴 때"), ("permission_prompt", "승인을 기다릴 때")] {
+                for (key, title) in [("stop", "작업 완료"), ("permission_prompt", "승인을 기다릴 때")] {
                     let on = Settings.shared.app("claude", key, true)
                     sub.addItem(item(title, checked: on) { Settings.shared.setApp("claude", key, !on) })
                 }
