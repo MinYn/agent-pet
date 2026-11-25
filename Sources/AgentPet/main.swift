@@ -496,7 +496,16 @@ final class KeyablePanel: NSPanel {
         }
     }
 
+    /// 말풍선이 키보드를 받을 때 — 처리했으면 true (입력 칸에 글을 쓰는 중이면 Esc 만 받는다)
+    var onKey: ((NSEvent) -> Bool)?
+
     override func sendEvent(_ e: NSEvent) {
+        if e.type == .keyDown {
+            let typing = (firstResponder as? NSTextView)?.isFieldEditor == true
+            if (!typing || e.keyCode == 53), onKey?(e) == true { return }
+            super.sendEvent(e)
+            return
+        }
         switch e.type {
         case .leftMouseDown where grabbable(e):
             grabAt = NSEvent.mouseLocation
@@ -575,6 +584,9 @@ final class BubbleView: NSVisualEffectView {
     var onNav: ((Int) -> Void)?
     var onResize: (() -> Void)?
     private var expanded: Set<String> = []
+    /// 지금 보이는 알림 — 단축키가 쓴다
+    private var shown: (r: PetRequest, index: Int, total: Int)?
+    enum PickResult { case answered, picked, none }
     private let stack = NSStackView()
 
     override init(frame: NSRect) {
@@ -603,6 +615,7 @@ final class BubbleView: NSVisualEffectView {
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ r: PetRequest, index: Int, total: Int) {
+        shown = (r, index, total)
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let inner = BubbleView.width - 28
 
@@ -821,6 +834,74 @@ final class BubbleView: NSVisualEffectView {
         }
         send.isEnabled = done == r.questions.count
         add(send, inner)
+    }
+
+    // -------------------------------------------------------------------------
+    // 단축키 (AppDelegate.handleBubbleKey 가 부른다)
+    // -------------------------------------------------------------------------
+
+    private func redrawShown() {
+        guard let s = shown else { return }
+        show(s.r, index: s.index, total: s.total)
+        onResize?()
+    }
+
+    /// D · 스페이스 — 자세히 보기 / 접기
+    func toggleExpand() -> Bool {
+        guard let r = shown?.r, r.expandable || expanded.contains(r.id) else { return false }
+        if expanded.contains(r.id) { expanded.remove(r.id) } else { expanded.insert(r.id) }
+        redrawShown()
+        return true
+    }
+
+    /// ← → — 질문 모드면 이전·다음 질문 (질문 모드가 아니면 false → 알림 넘기기)
+    func moveQuestion(_ d: Int) -> Bool {
+        guard let r = shown?.r, !r.questions.isEmpty else { return false }
+        var st = qState[r.id] ?? (0, [:])
+        st.at = min(max(st.at + d, 0), r.questions.count - 1)
+        qState[r.id] = st
+        redrawShown()
+        return true
+    }
+
+    /// 숫자 n — 질문 모드: 지금 질문의 n번째 선택지 (여러 개 고르기면 넣고 빼기), 아니면 n번째 답 버튼
+    func pick(_ n: Int) -> PickResult {
+        guard let r = shown?.r else { return .none }
+        if !r.questions.isEmpty {
+            let st = qState[r.id] ?? (0, [:])
+            let q = r.questions[min(max(st.at, 0), r.questions.count - 1)]
+            guard n <= q.options.count else { return .none }
+            let o = q.options[n - 1]
+            var answers = st.answers
+            if q.multi {
+                let cur = answers[q.id] ?? ""
+                var set = Set(cur.hasPrefix("text:") ? [] : cur.split(separator: ",").map(String.init))
+                if set.contains(o.no) { set.remove(o.no) } else { set.insert(o.no) }
+                let v = q.options.map(\.no).filter { set.contains($0) }.joined(separator: ",")
+                answers[q.id] = v.isEmpty ? nil : v
+                qState[r.id] = (st.at, answers)
+            } else {
+                answers[q.id] = o.no
+                qState[r.id] = (st.at, answers)
+                advance(r)
+            }
+            redrawShown()
+            return .picked
+        }
+        guard n <= r.options.count else { return .none }
+        let id = n - 1 < r.ids.count ? r.ids[n - 1] : "reply:\(n - 1)"
+        onChoose?(r, id)
+        return .answered
+    }
+
+    /// ⌘↩ — 질문 모드에서 모든 질문에 답했으면 보낸다
+    func sendAnswers() -> Bool {
+        guard let r = shown?.r, !r.questions.isEmpty, let st = qState[r.id],
+              r.questions.allSatisfy({ !(st.answers[$0.id] ?? "").isEmpty }),
+              let d = try? JSONSerialization.data(withJSONObject: st.answers),
+              let json = String(data: d, encoding: .utf8) else { return false }
+        onChoose?(r, "multi:" + json)
+        return true
     }
 
     /// 답한 뒤 다음 빈 질문으로 (없으면 그대로)
@@ -1204,7 +1285,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         bubblePanel = makePanel(NSRect(x: 0, y: 0, width: BubbleView.width, height: 200), keyable: true)
         bubblePanel.becomesKeyOnlyIfNeeded = true
-        if let kp = bubblePanel as? KeyablePanel {   // 말풍선을 끌어도 펫을 옮긴다
+        Hotkey.onPress = { [weak self] in self?.focusBubble() }
+        Hotkey.register()
+        if let kp = bubblePanel as? KeyablePanel {   // 말풍선을 끌어도 펫을 옮긴다 · 단축키
+            kp.onKey = { [weak self] e in self?.handleBubbleKey(e) ?? false }
             kp.onDrag = { [weak self] d in self?.dragPet(by: d) }
             kp.onDragEnd = { [weak self] in self?.endDragPet() }
         }
@@ -1262,6 +1346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if cmd == "update-check" { Updater.check(manual: true); ok = true }
             else if cmd == "inbox" { Inbox.shared.show(); ok = true }   // 시험용: 알림함 열기
             else if cmd == "talk" { talkNow(); ok = true }              // 시험용: 지금 한마디
+            else if cmd == "minimize" { minimizeBubble(); ok = true }  // 시험용: 말풍선 최소화
+            else if cmd == "focus" { focusBubble(); ok = true }        // 시험용: ⌃⌥P 와 같음
             else if cmd.hasPrefix("do:") { ok = perform(String(cmd.dropFirst(3))) }   // 시험용: 행동 시키기 (do:jump 등)
             else if cmd.hasPrefix("press:") {   // 시험용: 말풍선 버튼 누르기 — press:<요청 id>:<버튼 id>
                 let parts = cmd.split(separator: ":", maxSplits: 2).map(String.init)
@@ -1314,6 +1400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let k = keepId, let i = list.firstIndex(where: { $0.id == k }) { current = i } else { current = min(current, max(list.count - 1, 0)) }
         if !fresh.isEmpty && !requests.isEmpty && !list.allSatisfy({ $0.source == "pet" }) {
             summon()   // 새 알림 — 보고 있는 곳으로 와서 알린다 (캐릭터 만들기 진행 알림은 제외)
+            if Hotkey.autoFocus { Hotkey.pendingFocus = Date() }   // 키보드를 쉬는 틈에 말풍선으로 옮긴다
         }
         for r in list where fresh.contains(r.id) { noticeLog("뜸 \(r.id) [\(r.source)] \(r.headline.prefix(30))") }
         for id in gone where !files.contains(id + ".json") && !selfRemoved.contains(id) {
@@ -1328,6 +1415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         petView.badge = list.count
         petView.needsDisplay = true
         if changed || !fresh.isEmpty { refreshBubble() }
+        if list.isEmpty && Hotkey.previousApp != nil { returnFocus() }   // 볼 알림이 없어지면 원래 앱으로
     }
 
     func refreshBubble() {
@@ -1354,6 +1442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 말풍선만 잠시 숨긴다 — 알림·숫자 배지는 그대로, 펫을 누르면 보던 알림부터 다시 보인다 (새 알림이 오면 다시 열린다)
     func minimizeBubble() {
+        defer { if Hotkey.previousApp != nil { returnFocus() } }
         bubbleOpen = false
         if requests.indices.contains(current) { noticeLog("숨김 \(requests[current].id) — 최소화 (펫을 누르면 다시)") }
         refreshBubble()
@@ -1450,6 +1539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }   // 권한 요청처럼 훅이 기다리는 요청은 훅이 응답 파일을 읽고 정리한다
         pollRequests()
         refreshBubble()
+        if Hotkey.previousApp != nil { returnFocus() }   // 말풍선으로 옮겨 왔던 키보드를 돌려준다 (마우스로 눌러도)
     }
 
     // -------------------------------------------------------------------------
@@ -1751,6 +1841,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
         lastOrigin = origin
         talkTick(now)   // 혼잣말 — 때가 되면 한마디, 떠 있으면 펫을 따라간다
+        autoFocusTick(now)   // 새 알림 — 키보드를 쉬는 틈에 말풍선으로
     }
 
     // -------------------------------------------------------------------------
@@ -1776,6 +1867,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(withTitle: "행동", action: nil, keyEquivalent: "").submenu = actionMenu()
         menu.addItem(withTitle: "혼자 말하기", action: nil, keyEquivalent: "").submenu = talkMenu()
+        let keys = Hotkey.helpMenu()
+        keys.insertItem(.separator(), at: 0)
+        keys.insertItem(item("알림이 오면 말풍선으로 키보드 옮기기 (끝나면 원래 앱으로)", checked: Hotkey.autoFocus) { Hotkey.autoFocus.toggle() }, at: 0)
+        menu.addItem(withTitle: "단축키 (\(Hotkey.label) 말풍선 열기)", action: nil, keyEquivalent: "").submenu = keys
         menu.addItem(.separator())
         menu.addItem(withTitle: "알림 범위", action: nil, keyEquivalent: "").submenu = notifyMenu()
 
