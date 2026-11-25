@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """AI 캐릭터 만들기 — 설명 한 줄로 오리지널 픽셀 아트 펫 캐릭터(프레임 6장)를 만든다.
 
-  make_character.py --prompt "모자 쓴 졸린 고양이"      Claude(claude -p)에게 설계를 맡겨 만든다
+  make_character.py --prompt "모자 쓴 졸린 고양이"      Claude(claude -p)에게 설계를 맡겨 만든다 (그림 + 말투·행동)
+  make_character.py --persona-only <캐릭터 폴더 이름>   이미 있는 캐릭터에 말투·행동(persona)만 만들어 넣는다
   make_character.py --spec spec.json                   직접 쓴 설계(JSON)로 그리기만 한다
   make_character.py --print-format                     설계 JSON 형식 안내를 출력한다 (스킬·사람용)
 
@@ -35,6 +36,27 @@ CLAUDE = shutil.which("claude", path=os.pathsep.join([os.environ.get("PATH", "")
                                                      "/opt/homebrew/bin", "/usr/local/bin"]))
 MODEL = os.environ.get("PET_CHARACTER_MODEL", "claude-sonnet-5-5")
 
+
+PERSONA_RULES = """persona — 이 캐릭터의 성격에 맞는 말투와 행동 성향. 데스크톱 펫이 혼자 말하고 움직일 때 쓴다.
+{"personality": "성격 한 줄 (30자 이내)",
+ "talk": {"general": [...], "morning": [...], "lunch": [...], "snack": [...], "evening": [...], "night": [...],
+          "sleep": [...], "perched": [...], "dock": [...], "wake": [...],
+          "alerts": "확인할 알림이 {n}개 있다고 알리는 한 문장", "done": "오늘 작업 {n}개가 끝났다고 칭찬하는 한 문장"},
+ "behavior": {"walk": 0~60, "stand": 0~60, "look": 0~60, "jump": 0~60, "wave": 0~60, "doze": 0~60,
+              "climb": 0~60, "hopdown": 0~60, "speed": 0.5~2.0, "sleep_after_min": 1~30}}
+- talk 은 캐릭터 말투 그대로(동물 울음·말버릇·어미). 상황마다 2~4문장, 한 문장 25자 이내, 한국어.
+  general: 아무 때나 / morning: 아침 / lunch: 점심 / snack: 오후 간식 / evening: 퇴근 무렵 / night: 늦은 밤 /
+  sleep: 자면서 잠꼬대 / perched: 창 위에 올라갔을 때 / dock: Dock 위 / wake: 깨웠을 때
+- 일하는 사람 옆의 펫이다 — 응원·휴식 권유·혼잣말. 욕설·비하·정치·특정 인물 언급 금지.
+- behavior 는 행동이 골라지는 비율(가중치)과 걷는 속도·잠드는 시간. 성격에 맞게 (게으르면 doze·stand↑ speed↓, 활발하면 jump·walk↑ speed↑).
+  기본값은 walk 40 · stand 28 · look 12 · jump 7 · wave 8 · doze 5 · climb 12 · hopdown 7 · speed 1.0 · sleep_after_min 3.
+"""
+
+PERSONA_FORMAT = """너는 데스크톱 펫 캐릭터의 말투와 행동을 설계한다. 캐릭터 이름·설명을 보고 아래 persona JSON 하나만 출력한다 (설명·코드 블록 없이).
+기존 작품 캐릭터 이름이 와도 대사를 베끼지 말고, 이름에서 느껴지는 분위기만 살린 새 말투로 쓴다.
+
+""" + PERSONA_RULES
+
 FORMAT = f"""너는 데스크톱 펫용 픽셀 아트 캐릭터 디자이너다. 사용자의 설명으로 **오리지널** 캐릭터를 설계한다.
 
 저작권
@@ -45,7 +67,8 @@ FORMAT = f"""너는 데스크톱 펫용 픽셀 아트 캐릭터 디자이너다.
 {{"name": "영문 소문자-하이픈 이름", "title": "한국어 이름", "faces": "left" 또는 "right",
   "palette": {{"글자 1개": "#rrggbb", ...}},
   "idle": [{GRID}개 문자열],
-  "changes": {{"walk1": {{"줄번호": "{GRID}글자", ...}}, "walk2": {{...}}, "sleep": {{...}}, "happy": {{...}}, "special": {{...}}}}}}
+  "changes": {{"walk1": {{"줄번호": "{GRID}글자", ...}}, "walk2": {{...}}, "sleep": {{...}}, "happy": {{...}}, "special": {{...}}}},
+  "persona": {{...아래 persona 규칙...}}}}
 
 격자 규칙
 - idle 은 정확히 {GRID}줄, 줄마다 정확히 {GRID}글자. "." 은 투명. 팔레트 글자만 쓴다 (팔레트 6~14색).
@@ -57,7 +80,8 @@ FORMAT = f"""너는 데스크톱 펫용 픽셀 아트 캐릭터 디자이너다.
   · happy: 눈을 ^ ^ 웃는 눈으로, 입을 벌리고 팔을 위로
   · special: 한쪽 팔을 들어 손 흔들기
 - 모든 프레임에 바뀌는 줄을 꼭 넣는다 (프레임마다 3~12줄).
-"""
+
+""" + PERSONA_RULES
 
 
 # =============================================================================
@@ -87,12 +111,12 @@ def clear(rid):
 # 설계 받기 · 검사 · 그리기
 # =============================================================================
 
-def ask_claude(message):
+def ask_claude(message, system=None):
     if not CLAUDE:
         raise RuntimeError("claude CLI 를 찾지 못했어요")
     r = subprocess.run(
         [CLAUDE, "-p", "--model", MODEL, "--tools", "", "--strict-mcp-config", "--setting-sources", "",
-         "--no-session-persistence", "--system-prompt", FORMAT],
+         "--no-session-persistence", "--system-prompt", system or FORMAT],
         input=message, capture_output=True, text=True, timeout=600, cwd=PET)
     with open(os.path.join(PET, "make_character.last.txt"), "w", encoding="utf-8") as f:   # 마지막 응답 원문 (문제 추적용)
         f.write(r.stdout)
@@ -169,6 +193,58 @@ def auto_walk(rows, side):
     return ["".join(r) for r in out]
 
 
+TALK_KEYS = ["general", "morning", "lunch", "snack", "evening", "night", "sleep", "perched", "dock", "wake"]
+BEHAVIOR_KEYS = ["walk", "stand", "look", "jump", "wave", "doze", "climb", "hopdown"]
+
+
+def normalize_persona(p):
+    """persona 를 앱이 믿고 쓸 수 있게 다듬는다 — 길이·개수·범위를 자른다. 쓸 게 없으면 None"""
+    if not isinstance(p, dict):
+        return None
+    clean = lambda t, n=40: re.sub(r"\s+", " ", str(t)).strip()[:n]
+    talk_in = p.get("talk") if isinstance(p.get("talk"), dict) else {}
+    talk = {}
+    for k in TALK_KEYS:
+        lines = talk_in.get(k)
+        lines = [lines] if isinstance(lines, str) else lines
+        lines = [clean(x) for x in (lines or []) if isinstance(x, str) and x.strip()][:6]
+        if lines:
+            talk[k] = lines
+    for k in ("alerts", "done"):   # {n} 자리표시가 있어야 쓴다
+        v = talk_in.get(k)
+        v = v[0] if isinstance(v, list) and v else v
+        if isinstance(v, str) and "{n}" in v:
+            talk[k] = clean(v, 60)
+    b_in = p.get("behavior") if isinstance(p.get("behavior"), dict) else {}
+    behavior = {}
+    for k in BEHAVIOR_KEYS:
+        try:
+            behavior[k] = max(0, min(60, int(b_in[k])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    for k, lo, hi in (("speed", 0.5, 2.0), ("sleep_after_min", 1, 30)):
+        try:
+            behavior[k] = max(lo, min(hi, float(b_in[k])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if not talk and not behavior:
+        return None
+    return {"personality": clean(p.get("personality") or "", 40), "talk": talk, "behavior": behavior}
+
+
+def write_persona(name, persona):
+    """character.json 에 persona 를 합쳐 쓴다 (faces·title 등 다른 값은 그대로)"""
+    path = os.path.join(CHARS, name, "character.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data["persona"] = persona
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def normalize(spec):
     """격자 크기·팔레트를 맞추고 idle + changes 로 6프레임을 만든다"""
     palette = {k[:1]: v for k, v in (spec.get("palette") or {}).items()}
@@ -202,7 +278,7 @@ def normalize(spec):
         frames[name] = rows
     name = re.sub(r"[^a-z0-9-]", "", (spec.get("name") or "pet").lower().replace(" ", "-"))[:32] or "pet"
     return {"name": name, "title": spec.get("title") or name, "faces": "right" if spec.get("faces") == "right" else "left",
-            "palette": palette, "frames": frames}
+            "palette": palette, "frames": frames, "persona": normalize_persona(spec.get("persona"))}
 
 
 def write_png(path, pixels, scale=1):
@@ -249,7 +325,8 @@ def render(spec, replace=False):
                 crop = [row[min(xs):max(xs) + 1] for row in pixels[min(ys):max(ys) + 1]]
                 write_png(os.path.join(out, "thumb.png"), crop, SCALE)
     with open(os.path.join(out, "character.json"), "w", encoding="utf-8") as f:
-        json.dump({"faces": spec["faces"], "title": spec["title"], "generated": True}, f, ensure_ascii=False, indent=2)
+        json.dump({"faces": spec["faces"], "title": spec["title"], "generated": True,
+                   **({"persona": spec["persona"]} if spec.get("persona") else {})}, f, ensure_ascii=False, indent=2)
     with open(os.path.join(out, "spec.json"), "w", encoding="utf-8") as f:   # 나중에 고쳐 다시 그릴 수 있게
         json.dump(spec, f, ensure_ascii=False)
     return name
@@ -261,7 +338,10 @@ def main():
     ap.add_argument("--spec")
     ap.add_argument("--print-format", action="store_true")
     ap.add_argument("--replace", action="store_true", help="같은 이름의 캐릭터를 덮어쓴다")
+    ap.add_argument("--persona-only", metavar="NAME", help="이미 있는 캐릭터에 말투·행동만 만들어 넣는다")
     a = ap.parse_args()
+    if a.persona_only:
+        return make_persona(a.persona_only)
     if a.print_format:
         print(FORMAT)
         return 0
@@ -294,6 +374,44 @@ def main():
     except Exception as e:
         clear(rid)
         notify(rid + "-fail", "캐릭터를 만들지 못했어요", str(e)[:300], expires=600)
+        print(f"실패: {e}", file=sys.stderr)
+        return 1
+
+
+def make_persona(name):
+    """이미 있는 캐릭터 폴더에 persona(말투·행동)를 만들어 character.json 에 넣는다"""
+    folder = os.path.join(CHARS, name)
+    rid = f"pet-persona-{int(time.time())}"
+    try:
+        if not os.path.isdir(folder):
+            raise RuntimeError(f"캐릭터 폴더가 없어요: {name}")
+        try:
+            with open(os.path.join(folder, "character.json"), encoding="utf-8") as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            info = {}
+        title = info.get("title") or name
+        desc = ""
+        try:   # AI 로 만든 캐릭터면 처음 설명·팔레트가 남아 있다
+            with open(os.path.join(folder, "raw.json"), encoding="utf-8") as f:
+                raw = json.load(f)
+            desc = f"\n팔레트 색: {', '.join((raw.get('palette') or {}).values())}"
+        except (OSError, ValueError, AttributeError):
+            pass
+        notify(rid, f"「{title}」의 말투·행동을 만드는 중이에요… (1분쯤)", "")
+        out, text = ask_claude(f"캐릭터 폴더 이름: {name}\n캐릭터 이름: {title}{desc}", system=PERSONA_FORMAT)
+        persona = normalize_persona(out.get("persona", out) if isinstance(out, dict) else None)
+        if not persona:
+            raise RuntimeError("말투·행동을 받지 못했어요")
+        write_persona(name, persona)
+        clear(rid)
+        notify(rid + "-done", f"「{title}」의 말투·행동 완성!", persona.get("personality") or "혼자 말하기·행동에 바로 반영돼요.",
+               expires=600, line=name)
+        print(name)
+        return 0
+    except Exception as e:
+        clear(rid)
+        notify(rid + "-fail", "말투·행동을 만들지 못했어요", str(e)[:300], expires=600)
         print(f"실패: {e}", file=sys.stderr)
         return 1
 

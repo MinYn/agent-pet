@@ -219,6 +219,10 @@ final class SourceRunner {
     var multicaScript: String { resourceDir + "/sources/multica_watch.py" }
     var codexLimitScript: String { resourceDir + "/sources/codex_limit.py" }
 
+    func makePersona(_ name: String, done: @escaping () -> Void) {
+        run("make-persona-\(name)", ["-I", resourceDir + "/sources/make_character.py", "--persona-only", name], completion: done)
+    }
+
     func makeCharacter(_ prompt: String, done: @escaping () -> Void) {
         run("make-character-\(Date().timeIntervalSince1970)", ["-I", resourceDir + "/sources/make_character.py", "--prompt", prompt],
             completion: done)
@@ -272,6 +276,11 @@ final class Sprites {
     private(set) var name = ""
     /// 원본 이미지가 왼쪽을 보고 있는지 — 캐릭터 폴더의 character.json {"faces": "right"} 로 바꾼다 (기본 왼쪽)
     private(set) var facesLeft = true
+    /// 캐릭터 말투·행동 — character.json 의 "persona" (없으면 기본 말투·행동)
+    private(set) var personality = ""
+    private(set) var talk: [String: [String]] = [:]
+    private(set) var talkTemplate: [String: String] = [:]   // alerts·done — {n} 자리표시
+    private(set) var behavior: [String: Double] = [:]
 
     /// 캐릭터 폴더 목록 (frames 중 idle 이 있는 폴더)
     static func available() -> [String] {
@@ -285,9 +294,20 @@ final class Sprites {
         name = pick
         images = [:]
         facesLeft = true
+        personality = ""; talk = [:]; talkTemplate = [:]; behavior = [:]
         if let d = fm.contents(atPath: "\(charDir)/\(pick)/character.json"),
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             facesLeft = (o["faces"] as? String ?? "left") != "right"
+            if let p = o["persona"] as? [String: Any] {
+                personality = p["personality"] as? String ?? ""
+                for (k, v) in p["talk"] as? [String: Any] ?? [:] {
+                    if let lines = v as? [String], !lines.isEmpty { talk[k] = lines }
+                    else if let t = v as? String, t.contains("{n}") { talkTemplate[k] = t }
+                }
+                for (k, v) in p["behavior"] as? [String: Any] ?? [:] {
+                    if let n = v as? NSNumber { behavior[k] = n.doubleValue }
+                }
+            }
         }
         if pick.isEmpty {
             images["idle"] = Sprites.fallback()
@@ -900,6 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
     var behavior: Behavior = .stand
+    var manualUntil = Date.distantPast   // 메뉴에서 시킨 행동 — 이 시각까지는 알림 손짓보다 먼저 한다
     var behaviorStart = Date()
     var behaviorUntil = Date()
     var walkSpeed: CGFloat = 24   // pt/초
@@ -907,18 +928,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 다음 행동을 가중치로 고른다 — 걷기·멈춰 서기가 대부분이고 가끔 다른 행동
     func pickBehavior(_ now: Date) {
-        var table: [(Behavior, Int)] = [(.walk, 40), (.stand, 28), (.look, 12), (.jump, 7), (.wave, 8), (.doze, 5)]
+        let w = { (key: String, base: Int) -> Int in Int(self.sprites.behavior[key] ?? Double(base)) }   // 캐릭터 성향 (없으면 기본)
+        var table: [(Behavior, Int)] = [(.walk, w("walk", 40)), (.stand, w("stand", 28)), (.look, w("look", 12)),
+                                        (.jump, w("jump", 7)), (.wave, w("wave", 8)), (.doze, w("doze", 5))]
         if windowPlay {   // 바닥에선 가끔 창으로 올라가고, 창 위에선 가끔 뛰어내린다
-            if case .ground = place { table.append((.climb, 12)) }
+            if case .ground = place { table.append((.climb, w("climb", 12))) }
             if case .perched(let id, _) = place {
-                table.append((.hopDown, 7))
+                table.append((.hopDown, w("hopdown", 7)))
                 if id == WindowWorld.dockId && !WindowWorld.dockIcons().isEmpty { table.append((.dockHop, 14)) }   // Dock 아이콘 건너뛰기
             }
         }
+        if table.reduce(0, { $0 + $1.1 }) <= 0 { table = [(.stand, 1)] }   // 성향이 전부 0 이면 멈춰 서기
         var roll = Int.random(in: 0..<table.reduce(0) { $0 + $1.1 })
         var pick: Behavior = .stand
         for (b, w) in table { if roll < w { pick = b; break }; roll -= w }
         if pick == behavior && pick != .walk { pick = .walk }   // 같은 행동 연달아 줄이기
+        startBehavior(pick, now)
+    }
+
+    /// 행동 하나를 시작한다 — 스스로 고를 때와 메뉴 「행동」에서 직접 시킬 때 같이 쓴다
+    func startBehavior(_ pick: Behavior, _ now: Date) {
         behavior = pick
         behaviorStart = now
         walkTarget = nil
@@ -935,7 +964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if abs(target - x) < 15 { target = x + (Bool.random() ? 30 : -30) }
             walkTarget = clampToScreen(target)   // 설정한 모니터 밖으로는 걸어가지 않는다
-            walkSpeed = CGFloat.random(in: 18...28)
+            walkSpeed = CGFloat.random(in: 18...28) * CGFloat(sprites.behavior["speed"] ?? 1)   // 캐릭터 걸음 빠르기
             behaviorUntil = now.addingTimeInterval(20)   // 도착하면 그 전에 끝난다
         case .stand: behaviorUntil = now.addingTimeInterval(Double.random(in: 1.5...4.5))
         case .look: behaviorUntil = now.addingTimeInterval(Double.random(in: 1.8...3.2)); nextTurn = now
@@ -1153,7 +1182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Settings.shared.home = f.origin
         }
     }
-    let sleepAfter: TimeInterval = 180   // 3분 동안 알림·클릭이 없으면 잔다
+    /// 이만큼 알림·클릭이 없으면 잔다 — 기본 3분, 캐릭터 persona 의 sleep_after_min 으로 바꾼다
+    var sleepAfter: TimeInterval { (sprites.behavior["sleep_after_min"] ?? 3) * 60 }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         [petDir, reqDir, respDir, charDir].forEach { try? fm.createDirectory(atPath: $0, withIntermediateDirectories: true) }
@@ -1231,6 +1261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default:
             if cmd == "update-check" { Updater.check(manual: true); ok = true }
             else if cmd == "inbox" { Inbox.shared.show(); ok = true }   // 시험용: 알림함 열기
+            else if cmd == "talk" { talkNow(); ok = true }              // 시험용: 지금 한마디
+            else if cmd.hasPrefix("do:") { ok = perform(String(cmd.dropFirst(3))) }   // 시험용: 행동 시키기 (do:jump 등)
             else if cmd.hasPrefix("press:") {   // 시험용: 말풍선 버튼 누르기 — press:<요청 id>:<버튼 id>
                 let parts = cmd.split(separator: ":", maxSplits: 2).map(String.init)
                 if parts.count == 3, let r = requests.first(where: { $0.id == parts[1] }) { answer(r, parts[2]); ok = true } else { ok = false }
@@ -1644,7 +1676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if now < happyUntil {   // 답장·클릭 직후 기뻐서 높이 뜀
             frame = "happy"
             (bob, squash) = hop(t, period: 0.45, height: 12)
-        } else if !requests.isEmpty {   // 알림: 보고 있는 곳까지 달려온 뒤 제자리에서 손짓
+        } else if !requests.isEmpty && now >= manualUntil {   // 알림: 보고 있는 곳까지 달려온 뒤 제자리에서 손짓
             walkTarget = nil
             if let target = summonTarget, windowPlay, summonHop(toward: target, now: now) {   // 폴짝폴짝 점프해서 다가온다
                 frame = "happy"
@@ -1718,6 +1750,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let origin = petPanel.frame.origin
         if bubblePanel.isVisible, origin != lastOrigin { layoutBubble() }
         lastOrigin = origin
+        talkTick(now)   // 혼잣말 — 때가 되면 한마디, 떠 있으면 펫을 따라간다
     }
 
     // -------------------------------------------------------------------------
@@ -1741,6 +1774,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        menu.addItem(withTitle: "행동", action: nil, keyEquivalent: "").submenu = actionMenu()
+        menu.addItem(withTitle: "혼자 말하기", action: nil, keyEquivalent: "").submenu = talkMenu()
+        menu.addItem(.separator())
         menu.addItem(withTitle: "알림 범위", action: nil, keyEquivalent: "").submenu = notifyMenu()
 
         let chars = NSMenu()
@@ -1760,6 +1796,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             chars.addItem(item("기존 Multica 펫에서 캐릭터 가져오기") { [weak self] in self?.importLegacyCharacters() })
         }
         chars.addItem(item("AI로 캐릭터 만들기…") { [weak self] in self?.makeCharacter() })
+        let persona = sprites.personality.isEmpty ? (sprites.talk.isEmpty ? "기본 말투·행동" : "말투·행동 있음") : sprites.personality
+        let info = NSMenuItem(title: "지금 캐릭터: \(persona)", action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        chars.addItem(info)
+        chars.addItem(item(sprites.talk.isEmpty ? "이 캐릭터의 말투·행동 만들기 (AI)" : "이 캐릭터의 말투·행동 다시 만들기 (AI)") { [weak self] in
+            guard let self, !self.sprites.name.isEmpty else { return }
+            let name = self.sprites.name
+            self.runner.makePersona(name) { [weak self] in   // 다 되면 바로 반영
+                if Settings.shared.character == name || self?.sprites.name == name { self?.sprites.load(name) }
+            }
+        })
         chars.addItem(item("캐릭터 폴더 열기") { NSWorkspace.shared.open(URL(fileURLWithPath: charDir)) })
         chars.addItem(item("다시 읽기") { [weak self] in self?.sprites.load(Settings.shared.character); self?.petView.image = nil })
         menu.addItem(withTitle: "캐릭터", action: nil, keyEquivalent: "").submenu = chars

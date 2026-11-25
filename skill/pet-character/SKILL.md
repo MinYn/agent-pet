@@ -10,7 +10,7 @@ AgentPet(`~/Applications/AgentPet.app`, 저장소 https://github.com/MinYn/agent
 ```
 idle.png walk1.png walk2.png sleep.png happy.png special.png   # 프레임 6장 (96×96, 32×32 격자를 3배)
 thumb.png                                                      # 메뉴 썸네일
-character.json                                                 # {"faces": "left"|"right", "title": "한국어 이름"}
+character.json                                                 # {"faces": "left"|"right", "title": "한국어 이름", "persona": {...}}
 spec.json                                                      # 그린 설계 — 고쳐서 다시 그릴 때 쓴다
 ```
 
@@ -50,3 +50,16 @@ MC=~/Applications/AgentPet.app/Contents/Resources/sources/make_character.py
 - 펫 우클릭 → 캐릭터 격자에 새 캐릭터가 보인다(메뉴를 열 때마다 다시 읽음). 고르면 바로 바뀐다.
 - 얼굴이 가는 방향과 반대로 걸으면 `character.json` 의 `faces` 를 바꾼다.
 - 앱 안에서도 우클릭 → 캐릭터 → 「AI로 캐릭터 만들기…」로 같은 방법 1을 쓸 수 있다고 안내한다.
+
+## 말투·행동 (persona)
+
+`character.json` 의 `persona` 는 펫이 혼자 말할 문장과 행동 성향이다. 「AI로 캐릭터 만들기」는 그림과 함께 만들고,
+이미 있는 캐릭터는 `$MC --persona-only <폴더 이름>` (앱: 우클릭 → 캐릭터 → 「이 캐릭터의 말투·행동 만들기」)으로 만든다.
+
+- `personality`: 성격 한 줄
+- `talk`: 상황별 문장 목록 — general · morning · lunch · snack · evening · night · sleep · perched · dock · wake,
+  그리고 `alerts`·`done` 은 `{n}` 이 든 한 문장. 캐릭터 말투(울음·말버릇·어미) 그대로, 한 문장 25자 이내.
+- `behavior`: 행동 가중치 walk · stand · look · jump · wave · doze · climb · hopdown (0~60), `speed`(0.5~2.0 걸음 빠르기),
+  `sleep_after_min`(1~30분 뒤 잠듦). 성격에 맞게 — 게으르면 doze·stand↑ speed↓, 활발하면 jump·walk↑ speed↑.
+- 손으로 고쳐도 된다. 앱은 우클릭 → 캐릭터 → 「다시 읽기」로 반영한다.
+
