@@ -17,6 +17,7 @@
       python3 multica_watch.py --demo     # 가짜 요청 2개 (말풍선·뱃지 확인용)
 """
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -69,7 +70,10 @@ REPLIES = {   # 「all」 범위의 기본 답장 (선택 대기는 댓글이 �
     "turn": ["좋아요, 진행해 주세요", "잠깐 보류해 주세요"],
     "fail": ["다시 시도해 주세요", "실패한 이유를 알려 주세요"],
     "stuck": ["이어서 진행해 주세요", "멈춘 이유를 알려 주세요"],
+    "ci_pass": ["CI 통과했어요, 이어서 진행해 주세요"],
+    "ci_fail": ["CI 실패를 확인하고 고쳐 주세요", "실패 내용을 요약해 주세요"],
 }
+CI_INFO = {}   # 이슈 id → 이번 감시에서 읽은 GitHub CI 상태 (signature·말풍선이 쓴다)
 
 
 def desktop_link(web_url):
@@ -258,6 +262,8 @@ def menubar_kind(issue, runs, parents, leaders):
     if last and last.get("status") in FAILED:
         return "attention", "fail"   # 하위 이슈·예약을 기다리는 것처럼 보여도 실행이 실패해 멈춰 있다
     wait_kind = ((issue.get("metadata") or {}).get("waiting_for") or "").split(":")[0]
+    if wait_kind == "ci":
+        return "attention", "ci"   # CI 를 기다림 — 끝났는지는 classify 가 GitHub 에서 본다 (멈춤으로 알리지 않는다)
     if status in TURN and wait_kind in HUMAN_WAIT:
         return "attention", wait_kind   # 하위 이슈가 남아 있어도 이 이슈가 사람의 답을 기다린다
     if issue["id"] in parents:
@@ -280,7 +286,7 @@ def classify(issue, parents, leaders=()):
     · human_turn(기본): 🔴 사람 차례, 하위 이슈 모두 끝남 — SDD 리더 최상위 이슈
     · decision      : 🔴 결정 대기 — waiting_for=decision 으로 사람의 선택을 기다림
     · all           : 🔴 내가 볼 것 전부 — 실행 실패·사람 대기 표시·답 대기·사람 차례·멈춤
-    종류(말풍선): ask(결정) · human(사람 차례) · turn(대기·답 대기) · fail(실패) · stuck(멈춤)"""
+    종류(말풍선): ask(결정) · human(사람 차례) · turn(대기·답 대기) · fail(실패) · ci(CI 끝남) · stuck(멈춤)"""
     runs = rows(cli("issue", "runs", issue["id"]), "runs")
     group, sub = menubar_kind(issue, runs, parents, leaders)
     if group != "attention":
@@ -293,6 +299,20 @@ def classify(issue, parents, leaders=()):
     if sub == "fail":
         last = max(runs, key=lambda r: r.get("created_at") or "")
         return "fail", f"실행이 실패했어요 · {failure_text(last)}", runs
+    if sub == "ci":   # CI 대기 — 도는 중이면 조용히, 끝났는데 에이전트가 안 이어 가면 결과를 알린다
+        info = ci_status((issue.get("metadata") or {}).get("waiting_for") or "")
+        CI_INFO[issue["id"]] = info
+        if info["state"] == "pending":
+            return None, "", runs
+        if info["state"] == "pass":
+            return "ci", "CI가 끝났어요 · 모두 통과", runs
+        if info["state"] == "fail":
+            return "ci", "CI가 실패했어요 · " + plain(", ".join(info["failed"]), 60), runs
+        # 상태를 못 읽으면 예전처럼 오래 조용할 때만 멈춤으로 알린다
+        stuck_min = stuck_minutes()
+        if minutes_since(issue.get("last_activity_at")) <= stuck_min:
+            return None, "", runs
+        return "stuck", f"CI를 {stuck_min}분 넘게 기다려요 (GitHub 상태를 못 읽음)", runs
     if sub == "decision":
         return "ask", "", runs
     if sub in HUMAN_WAIT:
@@ -309,6 +329,61 @@ def classify(issue, parents, leaders=()):
 
 
 MENTION = re.compile(r"\[@?([^\]]*)\]\(mention://(member|agent|issue)/([0-9a-f-]+)\)")
+
+
+def signature(issue, kind, runs, lastc):
+    """같은 알림인지 가르는 표시 — 닫거나 답한 알림은 이 값이 바뀔 때까지 다시 띄우지 않는다.
+    · 사람을 기다리는 알림(ask·human·turn): 상태 + 기다리는 것 + 에이전트 최신 댓글 내용.
+      에이전트가 「변동 없음」을 같은 문장으로 다시 달아도 같은 알림이다 (활동 시각만 보면 매번 새 알림이 되어
+      PRT-1054 에서 PR 승인 대기 알림이 7번 다시 뜨고 「진행해 주세요」가 반복됐다)
+    · 실패: 마지막 실행 · 멈춤: 마지막 활동 시각"""
+    wait = (issue.get("metadata") or {}).get("waiting_for") or ""
+    if kind in ("ask", "human", "turn"):
+        body = re.sub(r"\s+", " ", (lastc or {}).get("content") or "").strip()
+        return f"{kind}:{issue.get('status')}:{wait}:{hashlib.sha1(body.encode()).hexdigest()[:12]}"
+    if kind == "ci":   # 같은 커밋의 같은 결과는 한 번만
+        info = CI_INFO.get(issue["id"]) or {}
+        return f"ci:{wait}:{info.get('sha', '')}:{info.get('state', '')}"
+    if kind == "fail":
+        last = max(runs, key=lambda r: r.get("created_at") or "", default={})
+        return f"{kind}:{issue.get('status')}:{last.get('id', '')}"
+    return f"{kind}:{issue.get('status')}:{issue.get('last_activity_at') or issue.get('updated_at')}"
+
+
+def ci_status(wait):
+    """waiting_for=ci:<owner>/<repo>#<PR> 의 GitHub CI 상태 — gh 로 읽는다.
+    {"state": pending|pass|fail|unknown, "failed": [이름], "sha": 최신 커밋, "url": PR 체크 화면}"""
+    info = {"state": "unknown", "failed": [], "sha": "", "url": ""}
+    m = re.match(r"ci:([\w.-]+/[\w.-]+)#(\d+)$", wait)
+    if not m:
+        return info
+    repo, num = m.group(1), m.group(2)
+    info["url"] = f"https://github.com/{repo}/pull/{num}/checks"
+    gh = shutil.which("gh") or "/opt/homebrew/bin/gh"
+    try:   # gh pr checks 는 도는 중(8)·실패(1)일 때도 JSON 을 내고 0 이 아닌 코드로 끝난다
+        view = subprocess.run([gh, "pr", "view", num, "-R", repo, "--json", "headRefOid"], capture_output=True, text=True, timeout=20)
+        info["sha"] = (json.loads(view.stdout or "{}").get("headRefOid") or "")[:12]
+        r = subprocess.run([gh, "pr", "checks", num, "-R", repo, "--json", "name,bucket"], capture_output=True, text=True, timeout=20)
+        checks = json.loads(r.stdout or "[]")
+    except Exception:
+        return info
+    if not checks:
+        return info
+    buckets = [c.get("bucket") for c in checks]
+    info["failed"] = [c.get("name", "") for c in checks if c.get("bucket") in ("fail", "cancel")]
+    if "pending" in buckets:
+        info["state"] = "pending"
+    elif info["failed"]:
+        info["state"] = "fail"
+    else:
+        info["state"] = "pass"
+    return info
+
+
+def pr_url(issue):
+    """PR 승인 대기(waiting_for=pr-approval:<owner>/<repo>#<번호>)면 GitHub PR 주소 — 아니면 None"""
+    m = re.match(r"pr-approval:([\w.-]+/[\w.-]+)#(\d+)$", (issue.get("metadata") or {}).get("waiting_for") or "")
+    return f"https://github.com/{m.group(1)}/pull/{m.group(2)}" if m else None
 
 
 def ask_comment(comments):
@@ -577,12 +652,21 @@ def scan():
     # 끝나지 않은 하위 이슈가 있는 이슈 — 메뉴바와 같이 내 스쿼드·SDD 리더가 맡은 이슈 안에서만 센다
     parents = {i.get("parent_issue_id") for i in issues if i.get("parent_issue_id")}
     leaders = set(st.get("leaders", []))
-    with ThreadPoolExecutor(max_workers=6) as pool:   # 이슈마다 실행·예약 조회 — 메뉴바처럼 병렬로
-        judged = list(pool.map(lambda i: classify(i, parents, leaders), issues))
-    for issue, (kind, headline, runs) in zip(issues, judged):
+    def judge(i):
+        kind, headline, runs = classify(i, parents, leaders)
+        # 알릴 이슈만 댓글을 미리 읽는다 — 다시 띄울지(sig)를 댓글 내용으로 정하려고
+        comments = rows(cli("issue", "comment", "list", i["id"]), "comments") if kind else []
+        return kind, headline, runs, comments
+
+    with ThreadPoolExecutor(max_workers=6) as pool:   # 이슈마다 실행·예약·댓글 조회 — 메뉴바처럼 병렬로
+        judged = list(pool.map(judge, issues))
+    for issue, (kind, headline, runs, comments) in zip(issues, judged):
         if not kind:
             continue
-        sig = f"{kind}:{issue.get('status')}:{issue.get('last_activity_at') or issue.get('updated_at')}"
+        sig = signature(issue, kind, runs, ask_comment(comments))
+        legacy = f"{kind}:{issue.get('status')}:{issue.get('last_activity_at') or issue.get('updated_at')}"
+        if dismissed.get(issue["id"]) == legacy:   # 예전 방식(활동 시각)으로 닫아 둔 뒤 바뀐 게 없으면 새 방식으로 옮긴다
+            dismissed[issue["id"]] = sig
         rid = f"{issue['id'][:13].replace('-', '')}-{kind}"
         if dismissed.get(issue["id"]) == sig:
             continue
@@ -594,7 +678,6 @@ def scan():
         # 에이전트 이름: 마지막 실행을 한 에이전트 → 없으면 담당자(에이전트·스쿼드) 이름
         last = max(runs, key=lambda r: r.get("created_at") or "", default=None)
         agent = names.get((last or {}).get("agent_id")) or names.get(issue.get("assignee_id")) or "에이전트"
-        comments = rows(cli("issue", "comment", "list", issue["id"]), "comments")
         lastc = ask_comment(comments)
         text = (lastc or {}).get("content", "")
         if kind in ("ask", "human"):   # 사람을 부른 댓글: 큰 글씨 = 그 댓글 첫 줄, 버튼 = 댓글이 정해 준 답
@@ -611,11 +694,21 @@ def scan():
                 pairs, reason = suggest(st, issue, lastc)
                 if reason:
                     detail = plain(f"⭐ 추천: {reason} · {detail}", 200)
+        elif kind == "ci":
+            ok = (CI_INFO.get(issue["id"]) or {}).get("state") == "pass"
+            pairs = [(r, r) for r in REPLIES["ci_pass" if ok else "ci_fail"]]
+            detail = plain(text)
         else:
             pairs = [(r, r) for r in REPLIES[kind]]
             detail = plain(text)
         link = desktop_link(f"{APP_URL}/{st.get('slug', '')}/issues/{issue['id']}"
                             + (f"#comment-{lastc['id']}" if (lastc or {}).get("id") else ""))   # 말풍선에 띄운 댓글 위치로
+        open_label = "Multica에서 열기"
+        pr = pr_url(issue)
+        if pr:   # PR 승인 대기 — Multica 에 답해도 풀리지 않는다(GitHub 에서 승인·리뷰 정리). 답장 버튼 대신 PR 열기만
+            pairs, link, open_label = [], pr, "GitHub에서 PR 열기"
+        if kind == "ci" and (CI_INFO.get(issue["id"]) or {}).get("url"):
+            link, open_label = CI_INFO[issue["id"]]["url"], "GitHub에서 CI 보기"
         parent = parent_of(st, issue)
         line = issue.get("title", "")
         if parent:   # 상위 이슈가 있으면 그 제목을 앞에
@@ -635,7 +728,7 @@ def scan():
             "line": line,
             "detail": detail,
             "options": options, "ids": ids,
-            "openLabel": "Multica에서 열기",
+            "openLabel": open_label,
             "link": link,
             "session": issue["id"],
         })
